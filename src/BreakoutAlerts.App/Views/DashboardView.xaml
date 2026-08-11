@@ -1,0 +1,651 @@
+<UserControl
+    x:Class="BreakoutAlerts.App.Views.DashboardView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:conv="clr-namespace:BreakoutAlerts.App.Converters"
+    xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+    d:DesignHeight="700"
+    d:DesignWidth="1300"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <UserControl.Resources>
+        <conv:BoolToDirectionBrushConverter x:Key="BoolToDirectionBrush" />
+        <conv:NullableNumberConverter x:Key="NullableNumber" />
+        <conv:SignedPercentConverter x:Key="SignedPercent" />
+        <conv:SignToBrushConverter x:Key="SignToBrush" />
+        <conv:RangePositionToBrushConverter x:Key="RangePositionBrush" />
+        <conv:RangePositionToTextConverter x:Key="RangePositionText" />
+        <conv:BoolToVisibilityConverter x:Key="BoolToVisibility" />
+
+        <!--
+            Alert row. The direction tint is applied to the whole row plus a heavy leading
+            bar, so long and short are separable by position and shape as well as colour -
+            colour alone would make the most important field unreadable to a colour-blind
+            user on the one screen that matters most.
+        -->
+        <Style x:Key="AlertRowItem" TargetType="ListBoxItem">
+            <!--
+                Double-click handled per item. InputBindings cannot be set from a Style
+                (the collection is read-only there), and a MouseBinding on the parent
+                ListBox never fires because ListBoxItem consumes the mouse-down for
+                selection - so an EventSetter is the reliable route. The handler does
+                nothing but forward to the ViewModel's command.
+            -->
+            <EventSetter Event="MouseDoubleClick" Handler="OnAlertRowDoubleClick" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="0,0,0,3" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <!--
+                            Two nested borders. The inner one carries the direction bar; the
+                            outer one carries selection. A single border cannot do both, and
+                            filling the row with the accent colour on selection drowned the
+                            red/green tint - which made direction, the most important field
+                            on the screen, hardest to read on the row being looked at.
+                        -->
+                        <Border
+                            x:Name="Selection"
+                            BorderBrush="Transparent"
+                            BorderThickness="0,1,1,1"
+                            CornerRadius="0,4,4,0">
+                            <Border
+                                x:Name="Root"
+                                Background="{StaticResource AppSurfaceElevatedBrush}"
+                                BorderBrush="{Binding IsLong, Converter={StaticResource BoolToDirectionBrush}}"
+                                BorderThickness="3,0,0,0">
+                                <ContentPresenter Margin="12,8" />
+                            </Border>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="{StaticResource AppSurfaceHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <!--  Selection reads as an accent outline plus a lift in surface, leaving the direction tint intact.  -->
+                                <Setter TargetName="Selection" Property="BorderBrush" Value="{StaticResource AppAccentBrush}" />
+                                <Setter TargetName="Root" Property="Background" Value="{StaticResource AppSurfaceHoverBrush}" />
+                                <Setter TargetName="Root" Property="BorderThickness" Value="5,0,0,0" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="WatchRowItem" TargetType="ListBoxItem">
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="0,0,0,1" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border
+                            x:Name="Root"
+                            Background="Transparent"
+                            BorderBrush="{StaticResource AppBorderSubtleBrush}"
+                            BorderThickness="0,0,0,1"
+                            CornerRadius="4">
+                            <ContentPresenter Margin="8,7" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="{StaticResource AppSurfaceHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="{StaticResource AppSurfaceElevatedBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="252" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!--  ============ ALERTS ============  -->
+        <Border
+            Grid.Row="0"
+            Grid.Column="0"
+            Margin="0,0,0,8"
+            Background="{StaticResource AppSurfaceBrush}"
+            BorderBrush="{StaticResource AppBorderBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+            <Grid Margin="14,12">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock
+                        Grid.Column="0"
+                        VerticalAlignment="Center"
+                        Style="{StaticResource SectionHeaderText}"
+                        Text="ALERTS" />
+
+                    <TextBlock
+                        Grid.Column="1"
+                        Margin="14,0,0,0"
+                        VerticalAlignment="Center"
+                        FontSize="11"
+                        Foreground="{StaticResource AppTextTertiaryBrush}"
+                        Text="click a row to load option candidates" />
+
+                    <StackPanel
+                        Grid.Column="2"
+                        VerticalAlignment="Center"
+                        Orientation="Horizontal">
+                        <!--
+                            The list shows today only by default. The log itself is never
+                            trimmed - it is the backtesting record - so this filters the view
+                            rather than touching the file, and the hidden count makes it
+                            obvious that something is being withheld. A list that silently
+                            omits records is worse than a cluttered one.
+                        -->
+                        <CheckBox
+                            Margin="0,0,16,0"
+                            VerticalAlignment="Center"
+                            FontSize="11"
+                            Foreground="{StaticResource AppTextSecondaryBrush}"
+                            IsChecked="{Binding ShowAllHistory, Mode=TwoWay}">
+                            <TextBlock VerticalAlignment="Center" FontSize="11">
+                                <Run Text="earlier sessions" />
+                                <Run Foreground="{StaticResource AppTextTertiaryBrush}" Text="{Binding HiddenHistoryCount, Mode=OneWay, StringFormat=({0})}" />
+                            </TextBlock>
+                        </CheckBox>
+
+                        <TextBlock
+                            VerticalAlignment="Center"
+                            FontWeight="SemiBold"
+                            Style="{StaticResource BodyText}"
+                            Text="{Binding SessionCount}" />
+                        <TextBlock
+                            Margin="6,0,0,0"
+                            VerticalAlignment="Center"
+                            FontSize="11"
+                            Foreground="{StaticResource AppTextTertiaryBrush}"
+                            Text="this session" />
+                    </StackPanel>
+                </Grid>
+
+                <ListBox
+                    Grid.Row="1"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    ItemContainerStyle="{StaticResource AlertRowItem}"
+                    ItemsSource="{Binding Alerts}"
+                    ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                    SelectedItem="{Binding SelectedAlert, Mode=TwoWay}"
+                    VirtualizingPanel.IsVirtualizing="True"
+                    VirtualizingPanel.VirtualizationMode="Recycling">
+                    <!--
+                        Double-click is wired on the ITEM (see the AlertRowItem style's
+                        EventSetter), not here. A MouseBinding on the ListBox looks correct
+                        and silently never fires: ListBoxItem marks the mouse-down handled
+                        to perform selection, so the input never reaches the ListBox's
+                        InputBindings collection.
+                    -->
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="62" />
+                                    <ColumnDefinition Width="76" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock
+                                    Grid.Column="0"
+                                    VerticalAlignment="Center"
+                                    FontFamily="{StaticResource AppNumericFont}"
+                                    FontSize="11"
+                                    Foreground="{Binding IsLong, Converter={StaticResource BoolToDirectionBrush}}"
+                                    Text="{Binding TimeDisplay}" />
+
+                                <TextBlock
+                                    Grid.Column="1"
+                                    VerticalAlignment="Center"
+                                    FontSize="14"
+                                    FontWeight="SemiBold"
+                                    Foreground="{Binding IsLong, Converter={StaticResource BoolToDirectionBrush}}"
+                                    Text="{Binding Ticker}" />
+
+                                <TextBlock
+                                    Grid.Column="2"
+                                    VerticalAlignment="Center"
+                                    FontSize="12"
+                                    Foreground="{Binding IsLong, Converter={StaticResource BoolToDirectionBrush}}"
+                                    Text="{Binding Label}" />
+
+                                <!--  Premarket confirmation is called out - it is the stronger signal.  -->
+                                <Border
+                                    Grid.Column="3"
+                                    Margin="10,0,0,0"
+                                    Padding="7,2"
+                                    VerticalAlignment="Center"
+                                    BorderBrush="{Binding IsLong, Converter={StaticResource BoolToDirectionBrush}}"
+                                    BorderThickness="1"
+                                    CornerRadius="3"
+                                    Visibility="{Binding IsPremarketConfirmation, Converter={StaticResource BoolToVisibility}}">
+                                    <TextBlock
+                                        FontSize="10"
+                                        FontWeight="SemiBold"
+                                        Foreground="{Binding IsLong, Converter={StaticResource BoolToDirectionBrush}}"
+                                        Text="PM CONFIRM" />
+                                </Border>
+
+                                <TextBlock
+                                    Grid.Column="5"
+                                    VerticalAlignment="Center"
+                                    FontFamily="{StaticResource AppNumericFont}"
+                                    FontSize="12"
+                                    Foreground="{Binding IsLong, Converter={StaticResource BoolToDirectionBrush}}"
+                                    Text="{Binding TriggerPrice, Converter={StaticResource NullableNumber}}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </Grid>
+        </Border>
+
+        <!--  ============ OPTION CANDIDATES ============  -->
+        <Border
+            Grid.Row="1"
+            Grid.Column="0"
+            Background="{StaticResource AppSurfaceBrush}"
+            BorderBrush="{StaticResource AppBorderBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+            <Grid Margin="14,12">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <StackPanel
+                    Grid.Row="0"
+                    Margin="0,0,0,10"
+                    Orientation="Horizontal">
+                    <TextBlock
+                        VerticalAlignment="Center"
+                        Style="{StaticResource SectionHeaderText}"
+                        Text="CANDIDATES" />
+                    <TextBlock
+                        Margin="14,0,0,0"
+                        VerticalAlignment="Center"
+                        FontSize="14"
+                        FontWeight="SemiBold"
+                        Style="{StaticResource BodyText}"
+                        Text="{Binding SelectedTicker}" />
+                    <ui:ProgressRing
+                        Width="15"
+                        Height="15"
+                        Margin="12,0,0,0"
+                        IsIndeterminate="True"
+                        Visibility="{Binding IsLoadingCandidates, Converter={StaticResource BoolToVisibility}}" />
+
+                    <ui:ToggleSwitch
+                        Margin="24,0,0,0"
+                        VerticalAlignment="Center"
+                        Content="Show both sides"
+                        IsChecked="{Binding ShowBothSides, Mode=TwoWay}" />
+                </StackPanel>
+
+                <DataGrid
+                    Grid.Row="1"
+                    CellStyle="{StaticResource DataGridCellBase}"
+                    ColumnHeaderStyle="{StaticResource DataGridHeaderRight}"
+                    ItemsSource="{Binding Candidates}"
+                    RowStyle="{StaticResource DataGridRowCandidate}"
+                    Style="{StaticResource DataGridBase}">
+                    <DataGrid.Columns>
+                        <DataGridTemplateColumn
+                            Width="180"
+                            Header="CONTRACT"
+                            HeaderStyle="{StaticResource DataGridHeader}">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal">
+                                        <!--
+                                            The contract's own colour already carries
+                                            call-versus-put, so the top pick cannot be marked
+                                            by recolouring this text without overloading a
+                                            channel that already means something else. A
+                                            badge is unambiguous and survives being read at a
+                                            glance.
+                                        -->
+                                        <Border
+                                            Margin="0,0,6,0"
+                                            Padding="4,1"
+                                            VerticalAlignment="Center"
+                                            Background="{StaticResource AppAccentBrush}"
+                                            CornerRadius="3"
+                                            Visibility="{Binding IsTopPick, Converter={StaticResource BoolToVisibility}}">
+                                            <TextBlock
+                                                FontSize="9"
+                                                FontWeight="Bold"
+                                                Foreground="#0F1115"
+                                                Text="TOP" />
+                                        </Border>
+                                        <TextBlock
+                                            VerticalAlignment="Center"
+                                            FontFamily="{StaticResource AppNumericFont}"
+                                            FontSize="12"
+                                            FontWeight="SemiBold"
+                                            Foreground="{Binding IsCall, Converter={StaticResource BoolToDirectionBrush}}"
+                                            Text="{Binding Contract}" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <!--
+                            Opens a ticket on the Trading page. Places nothing - sending it
+                            takes two further deliberate actions there.
+                        -->
+                        <DataGridTemplateColumn Width="70" Header="">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <ui:Button
+                                        Padding="10,2"
+                                        Command="{Binding DataContext.TradeCandidateCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                        CommandParameter="{Binding}"
+                                        Content="Trade"
+                                        FontSize="10" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <DataGridTemplateColumn Width="80" Header="BID">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Style="{StaticResource NumericText}" Text="{Binding Bid, Converter={StaticResource NullableNumber}}" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <DataGridTemplateColumn Width="80" Header="ASK">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Style="{StaticResource NumericText}" Text="{Binding Ask, Converter={StaticResource NullableNumber}}" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <DataGridTemplateColumn Width="75" Header="DELTA">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock
+                                        Foreground="{StaticResource AppTextSecondaryBrush}"
+                                        Style="{StaticResource NumericText}"
+                                        Text="{Binding Delta, Converter={StaticResource NullableNumber}, ConverterParameter=F3}" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <DataGridTemplateColumn Width="75" Header="THETA">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock
+                                        Foreground="{StaticResource AppTextSecondaryBrush}"
+                                        Style="{StaticResource NumericText}"
+                                        Text="{Binding Theta, Converter={StaticResource NullableNumber}, ConverterParameter=F3}" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <DataGridTemplateColumn Width="70" Header="IV">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock
+                                        Foreground="{StaticResource AppTextSecondaryBrush}"
+                                        Style="{StaticResource NumericText}"
+                                        Text="{Binding IvDisplay}" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <DataGridTemplateColumn Width="55" Header="DTE">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock
+                                        Foreground="{StaticResource AppTextTertiaryBrush}"
+                                        Style="{StaticResource NumericText}"
+                                        Text="{Binding DaysToExpiry}" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <DataGridTemplateColumn Width="70" Header="SCORE">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock
+                                        FontWeight="SemiBold"
+                                        Style="{StaticResource NumericText}"
+                                        Text="{Binding Score, StringFormat=F2}" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <!--
+                            The rationale column is not decoration. A ranked recommendation
+                            the user cannot interrogate is one they have to either trust
+                            blindly or ignore.
+                        -->
+                        <DataGridTemplateColumn
+                            Width="*"
+                            Header="WHY"
+                            HeaderStyle="{StaticResource DataGridHeader}">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock
+                                        VerticalAlignment="Center"
+                                        FontSize="11"
+                                        Foreground="{StaticResource AppTextTertiaryBrush}"
+                                        Text="{Binding Rationale}"
+                                        TextTrimming="CharacterEllipsis"
+                                        ToolTip="{Binding Rationale}" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                    </DataGrid.Columns>
+                </DataGrid>
+
+                <StackPanel
+                    Grid.Row="2"
+                    Margin="0,8,0,0"
+                    Orientation="Horizontal">
+                    <TextBlock
+                        FontSize="11"
+                        Foreground="{StaticResource AppTextTertiaryBrush}"
+                        Text="{Binding Candidates.Count}" />
+                    <TextBlock
+                        Margin="4,0"
+                        FontSize="11"
+                        Foreground="{StaticResource AppTextTertiaryBrush}"
+                        Text="of" />
+                    <TextBlock
+                        FontSize="11"
+                        Foreground="{StaticResource AppTextTertiaryBrush}"
+                        Text="{Binding ChainSize}" />
+                    <TextBlock
+                        Margin="4,0,0,0"
+                        FontSize="11"
+                        Foreground="{StaticResource AppTextTertiaryBrush}"
+                        Text="contracts pass filter ·" />
+                    <TextBlock
+                        Margin="4,0,0,0"
+                        FontSize="11"
+                        Foreground="{StaticResource AppWarningBrush}"
+                        Text="{Binding RankerName}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!--  ============ WATCHLIST ============  -->
+        <Border
+            Grid.Row="0"
+            Grid.RowSpan="2"
+            Grid.Column="1"
+            Margin="8,0,0,0"
+            Background="{StaticResource AppSurfaceBrush}"
+            BorderBrush="{StaticResource AppBorderBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+            <Grid Margin="12">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <TextBlock
+                    Grid.Row="0"
+                    Margin="0,0,0,10"
+                    Style="{StaticResource SectionHeaderText}"
+                    Text="WATCHLIST" />
+
+                <StackPanel Grid.Row="1" Margin="0,0,0,10">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <ui:TextBox
+                        Grid.Column="0"
+                        PlaceholderText="Add symbol"
+                        Text="{Binding NewSymbol, UpdateSourceTrigger=PropertyChanged}">
+                        <ui:TextBox.InputBindings>
+                            <KeyBinding Command="{Binding AddSymbolCommand}" Key="Enter" />
+                        </ui:TextBox.InputBindings>
+                    </ui:TextBox>
+
+                    <ui:Button
+                        Grid.Column="1"
+                        Margin="6,0,0,0"
+                        Command="{Binding AddSymbolCommand}"
+                        Content="Add" />
+                </Grid>
+
+                <!--
+                    A rejected symbol has to say so here. Added silently, an unknown ticker
+                    returns an empty bar list from every call and shows as a permanently
+                    blank row that never alerts and never explains itself.
+                -->
+                <TextBlock
+                    Margin="2,6,0,0"
+                    FontSize="11"
+                    Foreground="{StaticResource AppDownBrush}"
+                    Text="{Binding AddSymbolError}"
+                    TextWrapping="Wrap"
+                    Visibility="{Binding HasAddSymbolError, Converter={StaticResource BoolToVisibility}}" />
+                </StackPanel>
+
+                <ListBox
+                    Grid.Row="2"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    ItemContainerStyle="{StaticResource WatchRowItem}"
+                    ItemsSource="{Binding Watchlist}"
+                    ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                    VirtualizingPanel.IsVirtualizing="True"
+                    VirtualizingPanel.VirtualizationMode="Recycling">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <TextBlock
+                                    Grid.Row="0"
+                                    Grid.Column="0"
+                                    FontSize="13"
+                                    FontWeight="SemiBold"
+                                    Foreground="{StaticResource AppTextPrimaryBrush}"
+                                    Text="{Binding Ticker}" />
+
+                                <TextBlock
+                                    Grid.Row="0"
+                                    Grid.Column="1"
+                                    Margin="8,0,0,0"
+                                    VerticalAlignment="Center"
+                                    FontFamily="{StaticResource AppNumericFont}"
+                                    FontSize="11"
+                                    Foreground="{Binding ChangePercent, Converter={StaticResource SignToBrush}}"
+                                    Text="{Binding ChangePercent, Converter={StaticResource SignedPercent}}" />
+
+                                <!--  Remove binds through the parent view's DataContext, since the row has no reference to the service.  -->
+                                <Button
+                                    Grid.Row="0"
+                                    Grid.RowSpan="2"
+                                    Grid.Column="2"
+                                    Margin="6,0,0,0"
+                                    Padding="6,2"
+                                    VerticalAlignment="Center"
+                                    Background="Transparent"
+                                    BorderThickness="0"
+                                    Command="{Binding DataContext.RemoveSymbolCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                    CommandParameter="{Binding}"
+                                    Content="✕"
+                                    FontSize="11"
+                                    Foreground="{StaticResource AppTextTertiaryBrush}"
+                                    ToolTip="Remove from watchlist" />
+
+                                <StackPanel
+                                    Grid.Row="1"
+                                    Grid.Column="0"
+                                    Grid.ColumnSpan="2"
+                                    Margin="0,3,0,0"
+                                    Orientation="Horizontal">
+                                    <TextBlock
+                                        FontFamily="{StaticResource AppNumericFont}"
+                                        FontSize="11"
+                                        Foreground="{StaticResource AppTextSecondaryBrush}"
+                                        Text="{Binding Last, StringFormat=N2}" />
+                                    <TextBlock
+                                        Margin="8,0,0,0"
+                                        FontSize="10"
+                                        FontWeight="SemiBold"
+                                        Foreground="{Binding Position, Converter={StaticResource RangePositionBrush}}"
+                                        Text="{Binding Position, Converter={StaticResource RangePositionText}}" />
+                                </StackPanel>
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

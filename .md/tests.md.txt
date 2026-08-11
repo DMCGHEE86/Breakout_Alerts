@@ -1,0 +1,205 @@
+# Test execution and coverage
+
+Updated 2026-08-04, after the Phase 1.5 dashboard restructure and the Pine-to-C# strategy port.
+
+## Latest run
+
+```
+dotnet test --collect:"XPlat Code Coverage"
+
+Passed!  - Failed: 0, Passed: 64, Skipped: 0, Total: 64, Duration: 103 ms
+Build:     0 warnings, 0 errors
+```
+
+## Coverage — BreakoutAlerts.Core
+
+**Overall: 89.5% line, 81.5% branch.**
+
+| Class | Line coverage | Notes |
+|---|---|---|
+| `AlertNotificationService` | 100.0% | |
+| `StrategyRegistry` | 100.0% | |
+| `MarketSession` | 100.0% | |
+| `AlertRecord` / `StrategySignal` / `WatchlistEntry` / `RankedOption` | 100.0% | Exercised through the logic that uses them |
+| `ScannerEngine` | 96.1% | |
+| `DeltaTargetRanker` | 95.3% | |
+| `JsonLinesAlertStore` | 92.1% | |
+| `JsonWatchlistService` | 91.3% | |
+| `OpeningRangeBreakoutStrategy` | 88.4% | |
+| `OptionRankContext` | 80.0% | Record boilerplate |
+| `OptionQuote` | 76.5% | DTO |
+| `Bar` | 60.0% | DTO with computed helpers |
+| `StrategyParameterDescriptor` | 50.0% | Record boilerplate |
+| `TickerSnapshot` | 0.0% | Pure DTO, consumed only by the UI layer |
+
+### On the 90% target
+
+Every class carrying actual logic sits between 88% and 100%. The overall figure is pulled
+below 90% entirely by record and DTO boilerplate - `TickerSnapshot`, `Bar`'s unused
+computed properties, generated record members.
+
+That gap is left deliberately. The spec's own instruction is explicit: *"Do not write
+redundant, low-value, or irrelevant tests (e.g., testing basic auto-properties or simple
+SDK wrappers) solely to inflate coverage numbers."* Adding property round-trip tests would
+push the number past 90% while testing nothing, which is precisely the outcome that rule
+exists to prevent. The honest reading is that **business-logic coverage meets the target
+and the headline percentage does not** - reported as-is rather than gamed.
+
+## What the tests actually assert
+
+Grouped by the failure each one is there to catch.
+
+### `OpeningRangeBreakoutStrategyTests` (20 tests)
+
+The rules that were expensive to get right in the Pine original, each of which would look
+like working software while producing a wrong trade:
+
+* Range locks from the 09:30-09:45 window only - a later bar cannot widen it.
+* Wicks never trigger. A high piercing the level with the body closing back inside is not a breakout.
+* PATH-1 fires once per direction per session.
+* PATH-2 retest-and-reversal fires; a body re-entering the range invalidates it permanently.
+* Invalidation treats a touch as a re-entry (inclusive comparison), matching the Pine rule.
+* **PATH-3 fires only when the premarket level lies outside the range**, and is suppressed
+  when it lies inside - the geometry decision confirmed on 2026-08-04.
+* Re-evaluating the same bars produces nothing. This is the de-duplication guard; without
+  it one breakout alerts on every scan cycle for the rest of the session.
+* State is isolated per ticker. A shared field would pass every single-symbol test and
+  cross-contaminate a real scan.
+* Session boundaries are half-open - 09:30 is the first regular bar, not the last premarket one.
+* Only timeframes dividing 15 are supported, matching the indicator's own guard.
+
+### `JsonLinesAlertStoreTests` (8 tests)
+
+* Null levels round-trip as JSON `null`, never `0.00`. A missing premarket high that
+  deserializes as zero reads as a real price and corrupts any backtest built on the log.
+* A truncated line is skipped and later records still load - the entire reason the format
+  is JSON Lines rather than a JSON array.
+* 50 concurrent appends produce 50 readable records, no torn lines.
+* A locked file does not throw. Losing a log line is bad; losing the running session is worse.
+
+### `CoreServicesTests` (16 tests)
+
+Watchlist persistence and case-insensitive de-duplication, corrupt-file fallback to the
+seed, registry enable/disable semantics and change-event suppression on no-op toggles, and
+that `AlertNotificationService` **persists before notifying** - reversed, a crash between
+the two leaves a signal the user saw but the log has no record of.
+
+### `ScanningAndRankingTests` (14 tests)
+
+Scan-cycle behaviour including that one failing symbol does not abort the cycle (that
+failure mode looks identical to "no setups today"), and the ranker's filtering of
+untradeable contracts, direction restriction, and ordering.
+
+## Live verification, 2026-08-04
+
+Separate from the unit tests: a clean Release build was run against the session replay.
+
+```
+Mock session replay generated for 12 symbols, starting 09:29 ET at 30x
+Scanner started over 8 symbols
+```
+
+Result over a full replayed session: **28 alerts** - PATH-1 ×13, PATH-2 ×5, PATH-3 ×10.
+
+* **PATH-1 fired exactly once per ticker per direction** across all 13 - de-duplication holds
+  end to end, not just in the unit test.
+* Alert timestamps are **session times** (`2026-08-04T09:55:00-04:00`), not wall clock.
+* **All 10 PATH-3 signals satisfied the geometry rule** - the premarket level lay outside
+  the opening range in the breakout direction in every case.
+
+### Premarket geometry — gap found and closed
+
+The first live run gave every symbol a premarket level *outside* its range, so the PATH-3
+**suppression** branch was never exercised live. Cause: the generator tried to control this
+by lowering premarket volatility, which cannot work — premarket is 330 bars against the
+opening range's 15, so even a quiet random walk accumulates a wider extreme. Symbols needing
+the level inside are now hard-clamped to a band narrower than the range will be.
+
+Re-run after the fix, over a full session:
+
+```
+27 alerts — PATH-1 ×13, PATH-2 ×5, PATH-3 ×9
+symbols exercising the SUPPRESSED branch: 6
+suppression violations: 0
+```
+
+Six symbols now have a premarket level inside the range on at least one side, and **no
+PATH-3 fired on a suppressed side**. NVDA, GOOGL and PLTR were correctly suppressed long;
+AMD, AAPL and META correctly suppressed short; every symbol whose level lay outside fired
+as expected. The rule is now verified end to end, not only in unit tests.
+
+Note the verification query itself was wrong on the first attempt — it demanded *both*
+premarket levels be inside the range, when each direction only concerns its own side. That
+produced a table reading "no symbol has PM inside" while the fix was in fact working.
+
+## Duplicate-instance hazard — found twice, then fixed in the product
+
+Two separate verification runs were invalidated by a second app instance appending to the
+same `alerts.jsonl`:
+
+* First occurrence: a stale Phase 1 process produced 378 alerts with PATH-1 apparently
+  re-firing constantly. Read exactly like a de-duplication bug in new code.
+* Second occurrence: two Phase 1.5 instances overlapped, giving 53 alerts and PATH-1 counts
+  of `1,2` per ticker+direction. Also read as a de-duplication regression.
+
+In both cases the giveaway was the log containing more than one `Scanner started` line.
+
+This is not only a testing nuisance - it corrupts the alert log, which is the one artefact
+the system exists to produce, and any backtest run over a doubled log is wrong in a way
+that looks like a strategy firing too often. **Fixed in the product**: `App.OnStartup` now
+claims a named `Global\BreakoutAlerts.SingleInstance` mutex and a second instance explains
+itself and exits. Smoke-tested by launching the executable twice - one process survives.
+
+Clean single-instance verification after the fix:
+
+```
+instances that logged a start: 1
+total: 30 — PATH-1=13, PATH-2=9, PATH-3=8
+PATH-1 counts per ticker+direction: 1        (only value present)
+PATH-3 suppression violations: 0
+```
+
+Diagnostic to run before trusting any live figure:
+
+```powershell
+(Select-String -Path "$env:LOCALAPPDATA\BreakoutAlerts\logs\*.log" -Pattern 'Scanner started').Count
+```
+
+**Caveat, learned 2026-08-04: this counter is not reliable across restarts.** The log file
+accumulates all day, and deleting it does not necessarily clear it - Windows keeps a file
+alive if a new handle opens it before the previous process's handle closes, so a "deleted"
+Serilog file can come back with its history intact and simply be appended to. A count of 4
+was observed immediately after deleting the log directory.
+
+The trustworthy check is the alert data itself, which cannot be faked by a stale log:
+
+```powershell
+$a = Get-Content "$env:LOCALAPPDATA\BreakoutAlertslerts.jsonl" | ForEach-Object { $_ | ConvertFrom-Json }
+$a | Where-Object { $_.alert_path -eq 'PATH-1' } | Group-Object { "$($_.ticker)$($_.direction)" } | ForEach-Object { $_.Count } | Sort-Object -Unique
+$a | Group-Object ticker | ForEach-Object { ($_.Group | Select-Object -ExpandProperty orb_high -Unique).Count } | Sort-Object -Unique
+```
+
+Both must print only `1`. PATH-1 firing more than once per ticker per direction, or a
+ticker showing more than one distinct ORB high, means either duplicate instances or
+partial bars reaching the strategy.
+
+## Partial bars corrupting the opening range — fixed 2026-08-04
+
+Symptom: duplicate alerts whose ORB levels **disagreed with each other** for the same
+ticker and timestamp (`orb_high` 303.56 on one row, 303.48 on another). A deterministic
+mock cannot produce two different ranges for one session, so the range itself was being
+computed from different data on different scan cycles.
+
+Cause: `MockMarketDataProvider.GetBarsAsync` filtered its 1-minute source by close time but
+then aggregated into 5-minute buckets **without checking whether the final bucket was
+complete**. At simulated 09:37 the 09:35-09:40 bucket held two minutes of data and produced
+a 5-minute bar with a too-narrow high and low. The strategy consumed that partial bar,
+recorded it as processed, and by design never revisits it - so a partial opening-range bar
+permanently corrupted the locked range for that session.
+
+This violated the contract already documented on `IPriceStrategy.Evaluate`: *the scanner is
+responsible for not passing a partially formed bar*. The provider now drops a trailing
+bucket whose end time has not yet passed.
+
+Verified after the fix, single instance, full session: 24 alerts, zero exact duplicate
+rows, PATH-1 exactly once per ticker per direction, exactly one distinct ORB per ticker.

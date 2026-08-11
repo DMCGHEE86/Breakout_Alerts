@@ -1,0 +1,22 @@
+<Application
+    x:Class="BreakoutAlerts.App.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+    <!--
+        No StartupUri. The shell window is resolved from the dependency injection
+        container in App.OnStartup so that it and its ViewModel receive their
+        dependencies, which a XAML-instantiated window cannot do.
+    -->
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!--  WPF-UI Fluent control templates and dark palette.  -->
+                <ui:ThemesDictionary Theme="Dark" />
+                <ui:ControlsDictionary />
+                <!--  Application palette and styles, layered on top of the above.  -->
+                <ResourceDictionary Source="Resources/AppTheme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

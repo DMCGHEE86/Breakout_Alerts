@@ -1,0 +1,174 @@
+# Options & Stock Scanner / Alert System - Instructions
+
+> **STATUS as of 2026-08-07.** This file remains the original specification. Where the built
+> application deviates from it, the deviation and its reason are recorded in the STATUS
+> section at the end rather than by editing the text above - the record of what was
+> originally asked for is worth keeping intact. `plan.md.txt` is the running decision log.
+
+## Project Overview
+* **Purpose**: An installable Windows application that scans equities, identifies defined options/stock setups, recommends highly profitable option chain positions, sends alert notifications, and routes orders via the moomoo OpenAPI.
+* **Core Goal**: Maintain accurate multi-ticker scans, calculate option chain profitability formulas locally, and safely connect to a running local moomoo OpenD gateway.
+
+## Tech Stack
+* **Language/Runtime**: C# / **.NET 10 (`net10.0` for logic, `net10.0-windows` for the WPF app)**. Decided 2026-08-03, superseding the original ".NET 8.0 or 9.0". Rationale: .NET 9 is an STS release already past end of support and its runtime is not installed here; .NET 8 support ends November 2026, roughly three months out, which would force a migration almost immediately on a multi-month build. .NET 10 is the current LTS (supported to November 2028) and is the only SDK installed on this machine. This satisfies the stated intent below — modern .NET rather than Framework 4.x.
+* **UI/Application**: WPF (Windows Presentation Foundation) using the CommunityToolkit.Mvvm pattern.
+* **API Integration**: `futu-api` via NuGet (Official moomoo OpenAPI C# SDK).
+* **Dependencies**: Microsoft.Extensions.DependencyInjection (IoC), Serilog (logging), Polly (retry logic), System.Text.Json.
+* **Do Not Use**: Obsolete .NET Framework 4.x (use modern .NET), third-party web scrapers for market data (rely strictly on OpenD), or WinForms (forbidden due to UI thread safety risk with live feeds).
+
+## Sequential Development Roadmap
+* **Phase 1: Frontend & UI Components (Current Focus)**: Build out Views, ViewModels, Custom Dashboard Layouts, Scanner Lists, Option Chain Visual Grids, Alert Windows, Strategy Configuration Management UI, and mock UI event handling.
+* **Phase 2: Core Business Logic & Alert Persistence**: Black-Scholes engine, dynamic trading strategy strategy provider, JSON file writer/watcher alert infrastructure, internal data caching structures, and full testing validation.
+* **Phase 3: Moomoo OpenD Infrastructure**: Integration of the `futu-api` SDK, background socket managers, request queueing engine, and secure credential handling.
+* **Phase 4: Notifications & Extensions**: Event sub-systems, real-time trigger pipelines, and integration of the Telegram API Bot client.
+
+## Core Code Architecture Requirements
+### 1. High-Visibility Documentation & Learning Comments
+* **Inline Explanations**: Every method, block of multi-threaded code, or asynchronous file handler must include detailed inline comments (`//`) explaining *what* the code block is doing and *why* it is designed that way. 
+* **WPF & MVVM Clarity**: Explicitly comment on UI event routing, Data Binding paths, and threading dispatchers to ensure absolute clarity during manual code reviews and future modifications.
+* **Standardized Headers**: Precede all classes and core interfaces with descriptive C# XML documentation (`///`) breaking down its exact architectural purpose, input arguments, and expected states.
+
+### 2. Dynamic Chart Strategy Architecture (TradingView Extensibility)
+* **Strategy Interface**: Decouple strategy calculation from the scanner using an `IPriceStrategy` interface. Strategies must accept price action arrays (OHLCV) and indicators to output a boolean trigger signal.
+* **Pluggable Registry**: Implement a runtime strategy coordinator engine (`IStrategyRegistry`). The scanner must iterate through a dynamic list of active strategies rather than executing hardcoded rules.
+* **TradingView Synchronization Blueprint**: Ensure strategy objects can accept raw numeric parameters (e.g., RSI Periods, MACD lengths) so that custom indicator parameters exported from your TradingView Pine Script partner project can be dynamically matched, swapped, or loaded at runtime via config.
+* **Signal Ownership** (decided 2026-08-03): **This application computes its own signals.** The scanner pulls OHLCV from moomoo and evaluates `IPriceStrategy` implementations locally. TradingView is *not* a signal source. Rationale: TradingView caps alert counts per subscription tier, which makes multi-hundred-ticker scanning impossible, and its webhooks require a publicly reachable HTTPS endpoint that a desktop application does not have.
+* **Pine Script Relationship**: The Pine indicators in the sibling `Indicators` project are ported to C# as `IPriceStrategy` implementations — starting with the 15-minute ORB. The Pine script remains valuable as a **visual cross-check**: identical inputs should produce identical signals, which is a real correctness test rather than a formality. The ORB alert JSON schema is retained as the internal alert contract so both sides stay comparable.
+
+### 3. Architectural Layout (WPF & MVVM Framework)
+* **Thread Safety**: Never update UI controls or collections directly from background market data callbacks. Always bind collections to `ObservableCollection<T>` and use standard WPF thread-safe dispatching methods to prevent application lockups.
+* **Decoupled Business Logic**: Keep ViewModels free of explicit UI framework dependencies. They must remain completely decoupled from Views to ensure they can be fully mocked and unit-tested to meet the 90% target.
+
+### 4. Alert Persistence & Dynamic Display Guardrails
+> **Revised 2026-08-03.** The original design routed alerts to the UI through `alerts.json` + `FileSystemWatcher`. Since the scanner and the UI run in the **same process**, that put the file system in the middle of an in-process message and inherited all of its failure modes: `FileSystemWatcher` drops events under load, fires duplicates, and fires *before* a write completes, so readers can observe truncated files. Appending to a JSON *array* also requires rewriting the whole file on every alert — precisely what collides with the reader being notified. The requirements below are unchanged; the mechanism is.
+
+* **In-Process Transport**: The Alert Console subscribes to `IAlertNotificationService` — the same event-driven abstraction the Telegram integration will plug into. No file sits between the scanner and the UI.
+* **JSON File Target**: Every triggered alert is persisted to a local `alerts.jsonl` file in **JSON Lines** format (one complete JSON object per line, append-only). Appends are effectively atomic, a partial write damages at most the final line, and readers never need to load the whole file. This is a persistence sink and an external integration point, not the UI transport.
+* **Inbound File Monitoring**: `FileSystemWatcher` is retained solely for ingesting alerts written by *external* producers, with debouncing and retry-on-locked-file. It is not on the path between the internal scanner and the UI.
+* **Thread-Safe Deserialization**: Ensure parsing routines handling file-system updates wrap operations in safe async try/catch blocks to gracefully handle simultaneous read/write file access lockouts. A malformed trailing line must be skipped, not fatal.
+
+### 5. Quantitative Options Logic (Profitability Matrix)
+* **Isolated Math Domain**: The Options engine must remain a pure, stateless mathematical service. It should consume generic pricing structures (Spot, Strike, DTE, RiskFreeRate, ImpliedVolatility) to output standard theoretical Greeks and expected value calculations.
+* **Profitability Metric**: Sort options recommendations strictly using an explicit, customizable mathematical Expected Value formula (`Probability of Profit` * `Target Reward`) minus (`Probability of Loss` * `Max Risk`).
+
+### 6. Critical Guardrails, Risk & Security
+* **Architecture Boundary**: Moomoo API requires the local OpenD gateway software to be running. Implement automatic connection state monitoring to handle gateway dropouts gracefully.
+* **Risk & Security**: 
+  * NEVER hardcode trading passwords, api keys, or account IDs. Use local Windows DPAPI (ProtectedData) or standard secure app settings.
+  * Default environment MUST strictly use `TrdEnv.SIMULATE` (Paper Trading). Changing to `TrdEnv.REAL` (Live Trading) requires explicit user confirmation via UI.
+  * Auto-trading execution requires explicit multi-factor or manual confirmation steps before dispatching orders.
+* **API Boundaries**: Follow moomoo OpenAPI frequency limitations (throttling and quotas) for subscription and history requests. Implement a structural queue for requests to avoid rate limits.
+
+## Testing & Quality Control
+* **Framework**: Use **xUnit** exclusively for unit and integration testing along with `Moq` or `NSubstitute` for mocking dependencies.
+* **Coverage Target**: Maintain at least **90% line and branch test coverage** across all newly implemented business logic, mathematical engines, and algorithmic triggers.
+* **No Fluff Tests**: Do not write redundant, low-value, or irrelevant tests (e.g., testing basic auto-properties or simple SDK wrappers) solely to inflate coverage numbers. Focus on edge cases, mock boundaries, and functional logic.
+* **Result Logging**: Every time tests are modified or executed by the agent, document and validate the coverage breakdown and execution outputs inside `.md/tests.md`. 
+
+## Future Extension Architecture (Telegram Integration)
+* **Notification Layer**: Design the alerting system using an event-driven or Pub/Sub architecture (e.g., an `IAlertNotificationService`). 
+* **Extensibility**: Ensure the scanner fires agnostic alert events so a **Telegram Bot API client** can be seamlessly plugged in later without altering the underlying core scanner logic.
+
+## Coding Conventions
+* **Style**: Strongly-typed C#, async/await pattern natively applied to all network/gateway calls, explicit error logging.
+* **Naming**: PascalCase for Class/Method/Property names, camelCase for local variables and parameters.
+* **State Management**: Encapsulate the OpenD context manager (`FTAPI`) in a singleton service layer to prevent redundant sockets or dropped connection handlers.
+
+## Essential Development Commands
+* **Restore**: `dotnet restore`
+* **Build**: `dotnet build`
+* **Run App**: `dotnet run --project src/BreakoutAlerts.App/BreakoutAlerts.App.csproj`
+* **Test**: `dotnet test /p:CollectCoverage=true /p:CoverletOutputFormat=opencover`
+* **Publish**: `dotnet publish src/BreakoutAlerts.App/BreakoutAlerts.App.csproj -c Release -r win-x64 --self-contained`
+
+Note: `dotnet publish` produces a **folder, not an installer**. Delivering the "installable Windows application" in the Project Overview requires a packaging step on top — MSIX, WiX, Inno Setup, or Velopack. Unresolved; a Phase 4 decision.
+
+---
+
+# STATUS — 2026-08-07
+
+Build: **0 errors**, Debug and Release both current. Tests: **110 passing**. Running live
+against moomoo OpenD with real data and paper order routing proven end to end.
+
+## Phase status against the original plan
+
+| Phase | Item | Status |
+|---|---|---|
+| 1 | Views, ViewModels, dashboard, scanner, option grid, alerts, strategy config UI | **Done** |
+| 2 | Dynamic strategy provider (`IPriceStrategy` / `IStrategyRegistry`) | **Done** |
+| 2 | Alert persistence | **Done** — JSON Lines, not a JSON array. See below. |
+| 2 | Internal data caching | **Done** 2026-08-07 — see plan.md §4p |
+| 2 | Black-Scholes engine | **Closed, not built** — see deviations |
+| 2 | `FileSystemWatcher` inbound alerts | **Closed, not built** — see deviations |
+| 3 | `futu-api` integration, socket managers | **Done** |
+| 3 | Secure credential handling | **Done**, differently — see deviations |
+| 3 | Request queueing engine | **Deferred** — measured budget is 999 remaining against a 9-symbol watchlist |
+| 4 | Event sub-system / trigger pipeline | **Done** — `IAlertNotificationService` |
+| 4 | Telegram bot client | **Not started** |
+| 4 | Installer | **Not started**, technology still undecided |
+| — | Order routing (Project Overview) | **Done** 2026-08-05/06, entry only |
+
+## Deviations from this specification, and why
+
+1. **Target framework is `net10.0` / `net10.0-windows`**, not .NET 8/9. .NET 9 is past end of
+   support and its runtime is absent; .NET 8 support ends November 2026. Confirmed 2026-08-03.
+
+2. **Signals come from a self-contained C# scanner**, not from TradingView alerts. TradingView
+   alert quotas make ingestion impractical at scale, and a desktop app is not publicly
+   reachable for webhooks. The Pine indicator is retained as a visual cross-check and the
+   alert schema is deliberately identical on both sides.
+
+3. **`alerts.jsonl` is JSON Lines and a persistence sink, not the message bus.** The scanner
+   and UI share a process, so routing in-process messages through the file system adds every
+   file-system failure mode for no benefit; `FileSystemWatcher` also drops events, fires
+   duplicates, and fires before writes complete. Appending to a JSON *array* would mean
+   rewriting the whole file per alert.
+
+4. **No Black-Scholes engine.** It existed to compute Probability of Profit for EV ranking.
+   PoP was deferred indefinitely on 2026-08-05 and option candidates rank on **delta alone** -
+   band 0.60-0.70, target 0.65. Closed rather than left as debt.
+
+5. **No `FileSystemWatcher` inbound path.** Designed out with (3); nothing has since needed it.
+
+6. **The trade password is never stored,** rather than being stored under DPAPI. It is taken
+   as a parameter, hashed, sent, and dropped. Not storing a brokerage credential is strictly
+   safer than storing it well.
+
+7. **Order routing is entry only.** Kill switches, daily loss limits and position management
+   were raised and explicitly rejected 2026-08-06: this app saves clicks timing an entry, the
+   position is managed in the moomoo app, and a guard rail here is bypassable by simply
+   opening moomoo.
+
+8. **Coverage is not gated at 90%.** Confirmed 2026-08-07 as an approximation rather than a
+   rule; relevant tests on real logic are what matter. Core logic classes sit well above it;
+   the headline number is diluted by DTOs.
+
+## Verified gateway behaviours
+
+Each was measured against a live gateway and each would otherwise have shipped as a subtly
+wrong number rather than an obvious failure. Full detail in plan.md §4c, §4g, §4o, §4q.
+
+* `RequestHistoryKL`'s `EndTime` is **exclusive** — today's premarket was absent, so PATH-3
+  could never fire on the live session.
+* An over-long history response is **truncated from the newest end**, silently dropping today.
+* `ExtendedTime` is required, or there are no premarket bars at all.
+* Bars are stamped with their **close**; the domain assumes the open.
+* The option-chain window is capped at **30 days**; a wider one is rejected outright and
+  returned an empty candidate list on every request.
+* The option delta filter takes **signed** bounds — puts have negative delta, so a positive
+  band silently excluded every put.
+* `Currency` is required on funds and positions, and changes the values returned.
+* `NeedGeneralSecAccount` defaults to false and hides real securities accounts.
+* **No overnight data exists.** K-lines cover 04:00-20:00 only; 20:00-04:00 is unavailable at
+  any timeframe.
+
+## Known gaps
+
+* Telegram and the installer are not started.
+* Navigation double-activation, seen since Phase 1, remains undiagnosed and harmless.
+* Chart alert labels can collide with the right-edge level labels late in a session.
+* `AlertRecord` and `ChartRenderModel` carry ORB-shaped named fields; both need generalising
+  as a second strategy lands.
+* The alert log cannot be read reliably from the agent's shell — verify it from the
+  application or a user-run shell. A false persistence bug was reported on the strength of a
+  stale view before the dashboard's own counters disproved it.

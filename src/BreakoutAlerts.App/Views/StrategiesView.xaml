@@ -1,0 +1,192 @@
+<UserControl
+    x:Class="BreakoutAlerts.App.Views.StrategiesView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:conv="clr-namespace:BreakoutAlerts.App.Converters"
+    xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+    d:DesignHeight="600"
+    d:DesignWidth="1200"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <UserControl.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVisibility" />
+
+        <!--
+            Parameter editor template. Selected at runtime by parameter Kind, which is what
+            makes the configuration UI generic: a new strategy declares descriptors and
+            gets a working editor without this file changing.
+        -->
+        <DataTemplate x:Key="ParameterEditor">
+            <Border
+                Margin="0,0,0,10"
+                Padding="14,12"
+                Background="{StaticResource AppSurfaceElevatedBrush}"
+                CornerRadius="6">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Grid.Column="0" Margin="0,0,16,0">
+                        <TextBlock
+                            FontWeight="SemiBold"
+                            Style="{StaticResource BodyText}"
+                            Text="{Binding DisplayName}" />
+                        <TextBlock
+                            Margin="0,4,0,0"
+                            FontSize="11"
+                            Foreground="{StaticResource AppTextTertiaryBrush}"
+                            Text="{Binding Description}"
+                            TextWrapping="Wrap" />
+                    </StackPanel>
+
+                    <!--  Toggle editor  -->
+                    <ui:ToggleSwitch
+                        Grid.Column="1"
+                        VerticalAlignment="Center"
+                        IsChecked="{Binding BoolValue, Mode=TwoWay}"
+                        Visibility="{Binding IsToggle, Converter={StaticResource BoolToVisibility}}" />
+
+                    <!--  Numeric editor  -->
+                    <StackPanel
+                        Grid.Column="1"
+                        VerticalAlignment="Center"
+                        Visibility="{Binding IsNumeric, Converter={StaticResource BoolToVisibility}}">
+                        <ui:NumberBox
+                            Width="130"
+                            Maximum="{Binding Descriptor.Maximum}"
+                            Minimum="{Binding Descriptor.Minimum}"
+                            Value="{Binding Value, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock
+                            Margin="0,4,0,0"
+                            HorizontalAlignment="Right"
+                            FontSize="11"
+                            Foreground="{StaticResource AppTextTertiaryBrush}"
+                            Text="{Binding ValueDisplay}" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="340" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!--  ============ STRATEGY LIST ============  -->
+        <Border
+            Grid.Column="0"
+            Padding="8"
+            Background="{StaticResource AppSurfaceBrush}"
+            BorderBrush="{StaticResource AppBorderBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+            <ListBox
+                Background="Transparent"
+                BorderThickness="0"
+                ItemsSource="{Binding Strategies}"
+                SelectedItem="{Binding SelectedStrategy, Mode=TwoWay}">
+                <ListBox.ItemContainerStyle>
+                    <Style BasedOn="{StaticResource NavRailItem}" TargetType="ListBoxItem">
+                        <Setter Property="Margin" Value="2,3" />
+                    </Style>
+                </ListBox.ItemContainerStyle>
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0" Margin="0,0,10,0">
+                                <TextBlock
+                                    FontWeight="SemiBold"
+                                    Style="{StaticResource BodyText}"
+                                    Text="{Binding DisplayName}" />
+                                <TextBlock
+                                    Margin="0,3,0,0"
+                                    FontSize="11"
+                                    Foreground="{StaticResource AppTextTertiaryBrush}"
+                                    Text="{Binding ParameterCount, StringFormat={}{0} parameters}" />
+                            </StackPanel>
+
+                            <ui:ToggleSwitch
+                                Grid.Column="1"
+                                VerticalAlignment="Center"
+                                IsChecked="{Binding IsEnabled, Mode=TwoWay}" />
+                        </Grid>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </Border>
+
+        <!--  ============ PARAMETER EDITOR ============  -->
+        <Border
+            Grid.Column="1"
+            Margin="12,0,0,0"
+            Padding="20"
+            Background="{StaticResource AppSurfaceBrush}"
+            BorderBrush="{StaticResource AppBorderBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+            <Grid DataContext="{Binding SelectedStrategy}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0">
+                    <TextBlock Style="{StaticResource PageTitleText}" Text="{Binding DisplayName}" />
+                    <TextBlock
+                        Margin="0,8,0,0"
+                        Style="{StaticResource SecondaryText}"
+                        Text="{Binding Description}"
+                        TextWrapping="Wrap" />
+
+                    <!--
+                        Phase 1 honesty notice. The parameter editors below are fully wired,
+                        but nothing evaluates them yet - the strategy port lands in Phase 2.
+                        Leaving this unstated would make the screen look functional when it
+                        is not, which is the kind of thing that gets trusted by mistake.
+                    -->
+                    <Border
+                        Margin="0,16,0,0"
+                        Padding="12,9"
+                        Background="{StaticResource AppSurfaceElevatedBrush}"
+                        BorderBrush="{StaticResource AppWarningBrush}"
+                        BorderThickness="1,0,0,0"
+                        CornerRadius="4">
+                        <TextBlock
+                            FontSize="11"
+                            Foreground="{StaticResource AppTextSecondaryBrush}"
+                            TextWrapping="Wrap"
+                            Text="Phase 1: parameters are editable and the registry is live, but no strategy evaluation runs yet. The scanner port lands in Phase 2." />
+                    </Border>
+
+                    <Rectangle
+                        Height="1"
+                        Margin="0,20"
+                        Fill="{StaticResource AppBorderBrush}" />
+
+                    <TextBlock
+                        Margin="0,0,0,12"
+                        Style="{StaticResource SectionHeaderText}"
+                        Text="PARAMETERS" />
+                </StackPanel>
+
+                <ScrollViewer
+                    Grid.Row="1"
+                    HorizontalScrollBarVisibility="Disabled"
+                    VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemTemplate="{StaticResource ParameterEditor}" ItemsSource="{Binding Parameters}" />
+                </ScrollViewer>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

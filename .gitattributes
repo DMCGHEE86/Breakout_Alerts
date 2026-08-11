@@ -1,0 +1,22 @@
+# Normalise line endings so a clone on another platform does not show every file as
+# modified. Git stores LF and checks out the platform's native ending.
+* text=auto
+
+# Explicit for the types in this repo, so behaviour does not depend on Git's guess.
+*.cs        text diff=csharp
+*.csproj    text
+*.slnx      text
+*.xaml      text
+*.json      text
+*.md        text
+*.txt       text
+*.pine      text
+*.gitignore text
+
+# Binary - never normalise, never diff as text.
+*.png       binary
+*.jpg       binary
+*.ico       binary
+*.dll       binary
+*.exe       binary
+*.pdb       binary

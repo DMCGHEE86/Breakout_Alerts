@@ -1,0 +1,1129 @@
+# BreakoutAlerts — Analysis & Implementation Plan
+
+Written 2026-08-03, against `.md/claude.md.txt`.
+
+---
+
+## 1. Environment findings (verified, not assumed)
+
+| Item | Finding |
+|---|---|
+| .NET SDKs installed | **10.0.302 only** — no .NET 8 or 9 SDK |
+| Runtimes installed | .NET 8.0.29 and 10.0.10, both including `WindowsDesktop` (WPF-capable); also 3.1.32 |
+| `futu-api` on NuGet | Exists, official (`futunnopen`), **v10.9.6908**, 28.5k downloads |
+| `futu-api` restore on net10.0 | Succeeds — "compatible with all the specified frameworks" |
+| `futu-api` shipped assemblies | **`net45` and `netcoreapp2.1` only** — no `netstandard2.0`. Zero NuGet dependencies |
+
+### Consequence: the target framework needs a decision
+
+The spec names ".NET 8.0 or .NET 9.0". Neither is a clean fit today:
+
+- **.NET 9** — runtime is not installed, and it is an STS release already past end of support. Rule out.
+- **.NET 8** — LTS, runtime present, matches the spec literally. But .NET 8 support **ends November 2026**, roughly three months out. Starting a multi-month build on it means migrating almost immediately.
+- **.NET 10** — current LTS, supported to November 2028, matches the only installed SDK.
+
+**Recommendation: `net10.0-windows`.** The spec's stated prohibition is "obsolete .NET Framework 4.x (use modern .NET)" — .NET 10 satisfies the intent. This is a deliberate deviation from the letter of the spec and needs sign-off, because it is expensive to reverse once the solution exists.
+
+### Consequence: `futu-api` is a dated assembly
+
+The official SDK's newest build targets .NET Core 2.1 (2019 era). It restores and will most likely run — it is a sockets-and-protobuf client with no NuGet dependencies — but it has not been rebuilt for modern .NET. **Recommend pulling a small Phase 3 connectivity spike forward** to smoke-test `FTAPI` against a running OpenD before Phases 1–2 accumulate work that assumes it functions.
+
+---
+
+## 2. Open questions that change the architecture
+
+### Q1 — Where do trading signals actually come from? (highest impact)
+
+The spec reads two ways and they lead to very different systems:
+
+- **(a) Self-contained scanner.** The C# app pulls OHLCV from moomoo and evaluates strategies locally. `IPriceStrategy` accepting price arrays, and `IStrategyRegistry` iterating active strategies, point clearly here. TradingView matters only for *parameter compatibility* and visual parity.
+- **(b) TradingView as signal source.** The Pine script fires alerts and this app ingests the JSON payload — which is exactly what the ORB indicator's payload was built for ("enables the future C# scanner app to instantly read and map the signal").
+
+**Recommendation: (a) as the primary path.** Two reasons:
+
+1. **TradingView alert quotas make (b) impractical at scale.** Alert counts are capped per plan; scanning hundreds of tickers would exhaust them immediately. A local scanner has no such limit.
+2. **(b) has an unsolved transport problem.** TradingView webhooks POST to a public HTTPS endpoint. A desktop app on a home machine is not publicly reachable — it would need a tunnel, a cloud relay, or email parsing. None of that is in the spec.
+
+Under (a), the ORB logic already written in Pine gets **ported to C#** as the first concrete `IPriceStrategy`. The existing JSON schema is kept as the internal alert contract, so the Pine indicator stays useful as a visual cross-check: same inputs should produce the same signals, which is a genuinely valuable correctness test.
+
+Ingesting external TradingView alerts can still be supported later as a secondary inbound path without disturbing the core.
+
+### Q2 — What is the ticker universe?
+
+Unspecified. A user-editable watchlist is the obvious Phase 1 default. Alternatives (moomoo screener output, static index membership) change the scanner's data-volume profile substantially.
+
+### Q3 — What does "installable" mean?
+
+`dotnet publish` produces a folder, not an installer. Real options: MSIX, WiX, Inno Setup, or Velopack. This is a Phase 4 concern but influences project layout now, so it should not be left open indefinitely.
+
+### Q4 — How is "Probability of Profit" defined?
+
+The EV formula is given as `(PoP × Reward) − (PoL × Risk)`, but PoP is not uniquely defined. Common choices: delta as a proxy, or lognormal terminal-distribution probability from spot/strike/IV/DTE. These produce materially different rankings. Needs pinning before the options engine is built.
+
+---
+
+## 3. Architectural corrections I would make
+
+### 3.1 `alerts.json` should not be the in-process message bus
+
+The spec asks for alerts to be written to `alerts.json` and streamed into the UI via `FileSystemWatcher`. Two problems:
+
+- The scanner and the UI live in the **same process**. Routing in-process messages through the file system is indirection with no benefit, and it inherits every file-system failure mode.
+- `FileSystemWatcher` is unreliable in practice: it drops events under load, fires duplicates, and fires *before* a write completes — so a reader can easily see a truncated file.
+- "Append/update the record" inside a JSON **array** requires rewriting the whole file on every alert, which is precisely what collides with concurrent readers.
+
+**Recommendation:**
+
+- Primary UI path is an **in-memory event bus** — `IAlertNotificationService`, which the spec already wants for the Telegram plug-in. The UI subscribes; no file involved.
+- `alerts.json` becomes a **persistence sink and an external integration point**, not the transport.
+- Use **JSON Lines** (one object per line, append-only) rather than a JSON array. Appends are effectively atomic, partial writes damage at most the final line, and readers never need the whole file.
+- `FileSystemWatcher` is retained only for *inbound* alerts from external producers, with debouncing and retry-on-locked-file.
+
+This satisfies every stated requirement — persistence, non-blocking updates, Telegram extensibility — without the fragility.
+
+### 3.2 Define domain contracts before building UI
+
+Phase 1 is UI-first against mocks. That is a legitimate way to get UX right, but it risks binding every view to shapes that the real engine later contradicts.
+
+**Mitigation:** define the domain model and interfaces (`IPriceStrategy`, `IStrategyRegistry`, bar/alert/option-quote records) as the *first* Phase 1 task, even though implementations land in Phase 2. The UI then binds to real shapes from day one. Small cost now, avoids a rebinding pass later.
+
+### 3.3 The 90% coverage target dictates project layout
+
+The spec correctly scopes 90% to "business logic, mathematical engines, and algorithmic triggers" — not Views, which cannot be meaningfully unit-tested. For that scoping to be *measurable* rather than aspirational, testable code must live in an assembly with no WPF reference:
+
+```
+BreakoutAlerts.sln
+src/
+  BreakoutAlerts.Core/      net10.0          — domain, strategies, options math. No WPF. Coverage gate applies HERE.
+  BreakoutAlerts.App/       net10.0-windows  — WPF, Views, ViewModels, DI host. Excluded from the gate.
+test/
+  BreakoutAlerts.Core.Tests/   xUnit + NSubstitute
+```
+
+Note this honestly: **Phase 1 will produce very little testable code**, because it is nearly all UI. The coverage target becomes meaningful from Phase 2 onward. It should not be used as a Phase 1 completion signal.
+
+---
+
+## 4. Phase 1 plan (current focus)
+
+Ordered so each step is verifiable before the next depends on it.
+
+| # | Task | Output |
+|---|---|---|
+| 1 | Solution + three projects, `net10.0` / `net10.0-windows`, `Directory.Build.props` for shared settings | `dotnet build` succeeds |
+| 2 | Domain contracts in Core — bar, alert record, option quote, strategy parameter descriptor, `IPriceStrategy`, `IStrategyRegistry`, `IAlertNotificationService`, `IMarketDataProvider` | Compiles; no implementations yet |
+| 3 | Generic host wiring — `Microsoft.Extensions.DependencyInjection`, Serilog to rolling file + debug sink | App starts, logs on launch |
+| 4 | Shell window + navigation chrome, CommunityToolkit.Mvvm base classes | Empty app runs, navigates between blank panes |
+| 5 | Mock services — deterministic replay `IMarketDataProvider`, timer-driven alert producer | Fake data flows without any network |
+| 6 | Scanner list view — watchlist management, sortable live rows | Binds to mock feed, updates without UI freeze |
+| 7 | Option chain grid — strikes × expiries, Greeks columns (values mocked) | Renders, scrolls, virtualized |
+| 8 | Alert console — subscribes to `IAlertNotificationService`, streams in | New mock alerts appear instantly |
+| 9 | Strategy configuration UI — parameter editors generated from strategy metadata, so a ported ORB strategy exposes its inputs without bespoke UI | Parameters editable, round-trip to JSON config |
+| 10 | Theming + layout baseline | Consistent look, dark-mode legible |
+
+**Exit criteria:** the app launches, navigates, displays live-updating mock scanner rows, renders an option chain, streams alerts into the console, and lets strategy parameters be edited and persisted — with zero network calls and zero moomoo dependency.
+
+### Phase 1 build status — 2026-08-03
+
+Tasks 1-10 implemented. `dotnet build` succeeds with **0 warnings, 0 errors**. The app was launched and run for ~2 minutes; the Serilog output confirms the host started, DI resolved every service, both page activations fired, and **27 alerts were published and persisted** to `alerts.jsonl` as valid JSON Lines with the Pine-compatible schema. No exceptions were logged.
+
+**Not verified: the visual result.** The app's windows do not appear on the interactive desktop when launched from the agent's shell context (all top-level windows report `IsWindowVisible = false`, and `PrintWindow` returns a fully black bitmap). Runtime behaviour is therefore confirmed; appearance is not. It needs to be run by hand.
+
+**Anomaly to watch.** The log shows page activation firing more than once without any user interaction — `Scanner → OptionChain → Scanner` within the first ten seconds, then repeating roughly two minutes later. Nothing should change the rail selection on its own. It is harmless today (activation just refetches mock data) but suggests the `ListBox.SelectedItem` two-way binding is being driven by something other than a click. Worth confirming against the visible UI before Phase 2 builds on that navigation.
+
+**Deliberately not done:** no unit tests. Phase 1 is almost entirely UI, and this was agreed. The one genuine exception is `JsonLinesAlertStore` — real logic, with concurrency and malformed-input handling — which is the natural first target when the Phase 2 coverage gate begins. `.md/tests.md` has not been created, since creating a coverage report with nothing to report would be misleading.
+
+**Recommended parallel spike:** a throwaway console app that connects `FTAPI` to a running OpenD and pulls one snapshot. Timeboxed. This retires the largest external unknown while Phase 1 work is still cheap to redirect.
+
+---
+
+## 4b. Phase 1.5 — dashboard restructure (planned 2026-08-04)
+
+Feedback after seeing Phase 1: keep the palette and the overall feel, restructure the
+information architecture. Alerts, watchlist and option chain belong on **one screen**.
+
+### 4b.1 Target layout (revised after feedback 2026-08-04)
+
+```
++--------------------------------------+---------------------+
+|  ALERTS                              |  WATCHLIST          |
+|  time | TICKER | strategy - path      |  full height -      |
+|  colour-coded long (up)/short (down)  |  the list gets long |
+|  clicking a row selects that ticker   |                     |
++--------------------------------------+  add / remove       |
+|  OPTION CANDIDATES                    |  live price + chg%  |
+|  filtered + ranked, NOT a full chain   |                     |
+|  same horizontal size as alerts pane   |  drives the scanner |
++--------------------------------------+---------------------+
+```
+
+Two decisions embedded here:
+
+* **The watchlist is a full-height right rail**, not a corner panel - it is expected to grow
+  long enough that vertical space matters more than the alert pane's width.
+* **The bottom pane is not an option chain.** It is a filtered, ranked candidate list. The
+  full calls/strike/puts grid is explicitly not wanted; rules (likely delta- and
+  theta-based) will narrow it to a handful of contracts worth acting on. Alerts and
+  candidates panes are the same width, stacked.
+
+Alert row format, as specified: `META  ORB BREAKOUT PATH-1`, tinted green for long and
+red for short.
+
+### 4b.1a Premarket confirmation signal (new)
+
+A third signal: a candle body closing beyond a **premarket** level, which is treated as
+stronger confirmation than the opening-range break alone.
+
+The stated qualifier - that it does not count when the premarket level sits inside the
+opening range - has a clear rationale. If the premarket high is *inside* the range, then
+clearing the ORB high already clears the premarket high, so the second alert carries no
+information the first did not. It is only independent confirmation when the premarket level
+lies **outside** the range in the breakout direction, making it a genuine second barrier.
+
+Implemented as `PATH-3` in the existing `alert_path` field, so the schema and the alert log
+are unchanged:
+
+| Geometry | Behaviour |
+|---|---|
+| Premarket high **above** ORB high (long case) | Fire PATH-3 on the first body close above the premarket high. Real confirmation. |
+| Premarket high **inside** the ORB range | Suppress. Redundant with PATH-1. |
+| Mirror rules for premarket low / short side | Same logic inverted. |
+
+Suppression is a strategy parameter rather than hardcoded, so the redundant case can be
+switched back on if it turns out to be worth seeing.
+
+**Confirmed 2026-08-04.** The original wording - "unless the premarket high is within or
+outside of the ORB itself" - negated both cases and could not be literally intended. Raised
+rather than silently resolved, because getting the geometry backwards would invert the
+signal rather than merely weaken it. The reading in the table above is correct: PATH-3
+fires only when the premarket level lies outside the opening range in the breakout
+direction, and is suppressed when it lies inside.
+
+### 4b.1b Trigger timeframe
+
+Selectable **1 / 3 / 5 / 15 minute**, defaulting to 5. This mirrors the Pine script exactly,
+including its set of supported timeframes, which preserves signal-for-signal parity when
+cross-checking the port against the indicator. The opening range still locks from the exact
+09:30-09:45 window regardless of the trigger timeframe.
+
+### 4b.1c Option candidate filtering
+
+Clicking a LONG alert filters candidates to calls, SHORT to puts, with a toggle to show
+both. Ranking rules are undecided and sit behind `IOptionRanker`; the Phase 1.5 placeholder
+sorts by proximity to a target delta so the pane is populated and reviewable while the real
+theta/delta criteria are worked out.
+
+### 4b.2 What this changes
+
+| Existing | Fate |
+|---|---|
+| `AlertsView` | Absorbed into the dashboard's alert pane. Detail panel dropped - the chain replaces it. |
+| `OptionChainView` | Becomes the dashboard's bottom pane. Underlying selector is driven by alert selection instead of a combo box. |
+| `ScannerView` | **Open question** - see D1. The watchlist rail duplicates part of it. |
+| `StrategiesView` | Unchanged, stays a separate nav page. |
+| `MockAlertProducer` | **Deleted.** Replaced by a real scanner engine running real strategies. |
+
+### 4b.3 The ORB port (the substantial piece)
+
+This is Phase 2 work pulled forward, and it is required rather than optional: alerts must
+now fire from the watchlist, which means something has to actually evaluate strategies.
+
+Porting `Indicators/src/orb_premarket_suite.pine` to C# as `OpeningRangeBreakoutStrategy`:
+
+* **Session handling** - `TimeZoneInfo.FindSystemTimeZoneById("America/New_York")`, matching
+  the Pine script's hardcoded exchange timezone. Premarket 04:00-09:30, opening range
+  09:30-09:45, regular session to 16:00.
+* **Per-ticker state, keyed.** The `IPriceStrategy` contract already warns about this: one
+  strategy instance is evaluated against many symbols, so a bare field holding "the current
+  ORB high" would work in single-ticker testing and silently cross-contaminate a real scan.
+  State lives in a `ConcurrentDictionary<string, TickerSessionState>`.
+* **PATH-1 / PATH-2 rules** port directly, including the ordering that mattered in Pine -
+  invalidation is checked *before* trigger logic, so a bar that re-enters the range can
+  never also register as a valid retest.
+* **One genuine improvement over Pine.** The Pine version had to refuse 2, 4 and 10-minute
+  charts because a bar straddling 09:45 would widen the range. In C# we fetch 1-minute bars
+  and aggregate in code, so the range is computed exactly from the 09:30-09:45 window while
+  triggers evaluate on whatever timeframe is configured. The timeframe restriction
+  disappears entirely.
+* **Signal de-duplication** - the scanner re-evaluates on a cycle, so each ticker records
+  the last bar timestamp it fired on. Without this, one breakout produces an alert on every
+  scan cycle for the rest of the session.
+* **Cross-check.** Same inputs should produce the same signals as the Pine indicator on the
+  same session. That is a real correctness test and the reason the alert JSON schema was
+  kept identical on both sides.
+
+### 4b.4 New components
+
+* `IWatchlistService` - add/remove/reorder, persisted to `watchlist.json`, raises `Changed`.
+  Single source of truth; the scanner reads from it rather than a hardcoded universe.
+* `ScannerEngine : BackgroundService` - on each cycle, for every watchlist ticker: fetch
+  bars, aggregate, run active strategies, publish de-duplicated signals. Replaces
+  `MockAlertProducer` entirely.
+* `IOptionRanker` - the seam for "which options to recommend". Ranking rules are explicitly
+  undecided, so Phase 1.5 ships a placeholder (sort by proximity to a target delta) behind
+  an interface. When the real rules are settled it is a new implementation, not a rewrite.
+* `DashboardViewModel` - owns the selected ticker and coordinates the three panes.
+
+### 4b.5 Build order
+
+Sequenced so nothing gets built twice. UI comes last so it binds to real shapes - the same
+principle that kept Phase 1 from needing a rebinding pass.
+
+1. `IWatchlistService` + persistence, and `IOptionRanker` contract.
+2. `OpeningRangeBreakoutStrategy` in Core, with **unit tests** - this is real logic with
+   real edge cases and is the natural place for the coverage gate to begin.
+3. `ScannerEngine`, wired to the watchlist. Verify alerts fire from real evaluation.
+4. `DashboardViewModel` + the three-pane view.
+5. Delete `MockAlertProducer`, `AlertsView`, `OptionChainView`.
+
+Steps 1-3 are verifiable headlessly against the log and `alerts.jsonl` before any UI exists,
+which keeps the visual iteration loop short.
+
+### 4b.6 Phase 1.5 build status — 2026-08-04
+
+All five steps implemented. Build: **0 warnings, 0 errors**. Tests: **64 passing**, Core at
+**89.5% line / 81.5% branch** (see `.md/tests.md.txt` for the breakdown and for why the
+headline number is below 90 while every logic class is 88-100%).
+
+Delivered:
+
+* `MarketSession` + `OpeningRangeBreakoutStrategy` - the Pine port, with PATH-1, PATH-2 and
+  the new PATH-3 premarket confirmation. Per-ticker keyed state and bar-level de-duplication.
+* `JsonWatchlistService` - persisted, atomic writes via temp-file replace.
+* `ScannerEngine` (plain, testable) + `ScannerHostedService` (timing loop only).
+* `IOptionRanker` + `DeltaTargetRanker` placeholder.
+* `DashboardViewModel` / `DashboardView` - alerts over candidates on the left, full-height
+  watchlist rail on the right.
+* `MockMarketDataProvider` rewritten as a **session replay** with real Eastern timestamps,
+  accelerated 30x. The previous timestamp-agnostic random walk could not produce a
+  09:30-09:45 window at all, so the strategy would have locked no range and fired nothing.
+* Deleted: `MockAlertProducer`, `AlertsView`, `OptionChainView` and their ViewModels.
+
+Live verification over a full replayed session: 28 alerts, PATH-1 ×13 / PATH-2 ×5 /
+PATH-3 ×10, PATH-1 firing exactly once per ticker per direction, session-time timestamps,
+and all PATH-3 signals satisfying the geometry rule.
+
+### 4b.7 First visual review — 2026-08-04
+
+The dashboard was seen for the first time (user-supplied screenshot,
+`screenshots/Dashboard_1.5.png`). Layout, alert format, colour coding, the PM CONFIRM
+badge, click-to-load, the watchlist rail and the candidates pane all render as designed.
+
+Three defects were visible on screen that **no amount of log inspection would have caught**:
+
+1. **Alert list was not in time order.** It read 12:50, 11:40, 11:40, 11:35, 12:25, 11:50 -
+   grouped by ticker rather than chronological. The scanner evaluates one symbol at a time
+   and replays all of its new bars before moving on, so signals arrive per-ticker; a blind
+   `Insert(0)` then reversed each group. Fixed by inserting at the correct position by
+   timestamp, in a single shared method used by both the live and replay paths.
+2. **Selection destroyed direction legibility.** The accent selection fill drowned the
+   red/green row tint, making direction hardest to read on the row being looked at. Fixed
+   with nested borders - an outer accent outline for selection, an inner bar for direction.
+3. **Implausible daily moves** (+11.10%, -7.24% on mega-caps). The mock's per-minute bias
+   compounds over 375 post-lock minutes; 0.00022 produced 8-11% days. Reduced to land
+   around 2-4%.
+
+All three were invisible to the headless verification, which is the argument for getting a
+screen in front of a human early rather than trusting green logs.
+
+**Carried forward:** the navigation double-activation noted in Phase 1 has not been
+diagnosed - it needs the visible UI. `.md/tests.md.txt` also records a process hazard worth
+knowing: a stale build left running will append to the same `alerts.jsonl` and produce
+evidence that reads exactly like a de-duplication bug.
+
+## 4c. Chart popup + OpenD probe — 2026-08-04
+
+### 4c.1 Where ticker data comes from today
+
+Nothing is real market data. `MockMarketDataProvider` holds 12 hardcoded symbols with
+invented base prices and generates a synthetic session; option chains and Greeks are
+formula approximations. The watchlist seeds 8 of those and persists to
+`%LOCALAPPDATA%\BreakoutAlerts\watchlist.json`.
+
+**Adding a symbol outside those 12 silently returns nothing** - blank row, no alerts, no
+error - because `GetBarsAsync` returns an empty list for an unknown ticker. Worth a proper
+"unknown symbol" state in the UI once the real provider lands.
+
+### 4c.2 OpenD probe (`tools/BreakoutAlerts.OpenDProbe`)
+
+Read-only diagnostic answering the question Phase 3 depends on: **is this account's data
+real-time through OpenD, or delayed?** moomoo's docs warn that API entitlements differ from
+app entitlements, so live quotes in the app prove nothing about the gateway. US equities
+are now free real-time on the API; **US options are excluded from that tier**, which
+matters because the candidates pane needs them.
+
+Run with OpenD started and logged in:
+
+```
+dotnet run --project tools/BreakoutAlerts.OpenDProbe
+```
+
+It reports snapshot lag against local time, fetches 5-minute bars, and attempts an option
+chain. Exit codes: 0 success, 1 connect/probe failure, 2 timeout.
+
+### 4c.2a RESULTS — run against a live gateway 2026-08-04 10:29 ET
+
+| Check | Result |
+|---|---|
+| Connection | Connected on 127.0.0.1:11111 |
+| Snapshot lag | **0.1 min — REAL-TIME.** AAPL stamped 10:29:25 against a 10:29:27 local clock |
+| Option chain | **Works.** 9 expiries, 61 strikes in the first |
+| History quota | 1 used, 999 remaining — not a constraint |
+| `RequestHistoryKL`, today only | **0 bars** |
+| `RequestHistoryKL`, last 7 days | 390 bars, ending at yesterday's close |
+| `Sub` + `GetKL` | **100 bars**, latest 2026-08-04 10:30 |
+| `RequestHistoryKL` + `ExtendedTime` | **960 bars** — first 04:05, last 20:00 |
+
+**Real-time is confirmed and options are available.** The prediction that US options would
+be blocked was wrong - they come through fine.
+
+Three findings that change how the Phase 3 adapter must be written:
+
+1. **`RequestHistoryKL` returns nothing for the current session.** It serves completed days
+   only. Today's intraday bars need `Qot_Sub` then `GetKL`. **The adapter needs both calls
+   stitched together**, which is not obvious from the API surface and would present as "the
+   chart is empty during the trading day" - the only time it matters.
+2. **Extended-hours bars are off by default.** `ExtendedTime` took a five-day 5-minute
+   request from 390 bars to 960 (04:00-20:00 rather than 09:30-16:00). Without it there are
+   no premarket bars, no premarket high or low, and **PATH-3 could never fire**.
+3. **moomoo stamps bars with their CLOSE time, not their open.** The earliest bar of a day
+   is `04:05`, i.e. the 04:00-04:05 bar. `Bar.Timestamp` and `MarketSession` both assume
+   OPEN times. Passed through unchanged, the half-open 09:30-09:45 window would capture the
+   bars closing at 09:35 and 09:40 but exclude the one closing at 09:45 - **building the
+   opening range from two bars instead of three and silently producing a wrong ORB high and
+   low.** The adapter must subtract the bar duration. Recorded on `IMarketDataProvider`
+   so it cannot be missed.
+
+None of these would have surfaced from reading the docs, and all three would have shipped
+as subtle wrong-number bugs rather than obvious failures.
+
+Note `FTSPI_Qot` is a ~150-member interface with no default implementations.
+`UnusedCallbacks.cs` is generated from the compiler's own CS0535 list rather than
+hand-written; regenerate it if futu-api is upgraded.
+
+### 4c.3 Chart popup
+
+Double-clicking an alert opens a **static snapshot** chart - candles, the opening range as
+a shaded band, premarket levels, and a flag for every alert on that ticker with the
+double-clicked one emphasised. Explicitly not live: the window answers "how far did this
+candle close from the range" and is then closed, which removes dispatcher marshalling,
+redraw thrash, and any chance of the chart diverging from the alert that opened it.
+
+Bars come from the same `IMarketDataProvider` the scanner uses, so **the chart cannot
+disagree with the alert**. It will be exactly as accurate as the feed - synthetic today,
+real once OpenD is wired, with no chart rework in between.
+
+**Library: ScottPlot 5** (MIT). Candlestick, Rectangle, HorizontalLine and Marker map
+one-to-one onto what was needed. LiveCharts2 and OxyPlot were also verified to restore on
+.NET 10 and would work; WebView2 + TradingView Lightweight Charts was considered for
+literal visual parity and rejected - a browser runtime and a JS bridge is a lot of
+machinery for a confirmation popup, and it would make the chart untestable from C#.
+
+### 4c.4 Headless render (`--render-sample`)
+
+```
+BreakoutAlerts.App.exe --render-sample out.png
+```
+
+Renders a representative session through the **real** `ChartRenderer` and writes a PNG,
+with no window. This exists because the app's windows cannot be screenshotted from the
+build environment, so without it "the chart works" could only ever mean "the chart
+compiles". It caught three presentation defects immediately: markers too small to read as
+flags, alert labels sitting on top of the candles, and level labels colliding with the
+opening bars.
+
+It also proved SkiaSharp renders correctly on .NET 10 despite the NU1701 warning that
+`SkiaSharp.Views.WPF` resolves via .NET Framework assemblies. **The WPF control itself is
+still unproven** - only a real window can exercise that.
+
+## 4d. PATH-2 rule revised — 2026-08-04
+
+Observed on a live chart: PATH-2 was firing on the first with-direction candle of the chop
+immediately after PATH-1, rather than on the candle that confirms continuation.
+
+Cause: the retest condition accepted a bare wick touch from a candle of **any** colour. In
+choppy price sitting on the broken level, that armed the setup instantly and the very next
+with-direction candle triggered - before any pullback had actually happened.
+
+**Revised rule, applied to BOTH the Pine indicator and the C# port:**
+
+| | Before | Now |
+|---|---|---|
+| Retest | Any candle whose wick touches the level | A **counter-direction** candle (red for a long setup, green for a short) whose wick touches the level, body still outside |
+| Trigger | The next with-direction candle | The next **with-direction candle that also closes beyond the level** |
+
+Consequence: a retest candle is counter-direction and a trigger candle is with-direction,
+so they can never be the same bar. The `allowSameBarPath2` parameter has been **removed**
+from both implementations rather than left as a dead setting.
+
+Three new tests encode the change: confirmation after a counter-direction retest fires,
+a wick touch without a pullback candle does not, and a confirming candle that closes back
+inside the range does not.
+
+**Also fixed the same day:** chart flags were drawn at a chart-scaled offset from the
+trigger price, which on a 7-point session put a PATH-2 marker 1.5 points above its own
+candle - landing on the opening range line with no candle near it, reading as the signal
+being on the wrong bar. Flags are now anchored to their candle's own high or low.
+
+## 4e. PHASE 3 PLAN — real market data (drafted 2026-08-04)
+
+### 4e.0 Scope decision: data only, no order routing
+
+Phase 3 delivers a working `MoomooMarketDataProvider` and nothing that can place a trade.
+Two reasons. Everything in the application currently runs on synthetic data, so real quotes
+are the single largest unlock. And order routing is a different class of risk that deserves
+its own phase and its own review rather than riding along with a data adapter.
+
+### 4e.1 Prerequisite: the delta ranking rule (small, do first)
+
+Rule specified 2026-08-04: **filter to absolute delta between 0.60 and 0.70, rank by
+proximity to a 0.65 target.** Replaces the placeholder scoring in `DeltaTargetRanker`.
+Bounds and target become parameters rather than constants. Roughly an hour, and it makes
+the candidates pane meaningful for the first time.
+
+### 4e.2 MUST VERIFY BEFORE WRITING THE PROVIDER
+
+Each of these changes the design rather than the implementation detail, and each is a
+short probe extension against the live gateway.
+
+| # | Question | Why it changes the design |
+|---|---|---|
+| 1 | Does `QotGetOptionChain` accept a **`DataFilter` with `DeltaMin`/`DeltaMax`**? The assembly exposes both, plus `OptionCondType_WithIn`. | If yes, the 0.60-0.70 band is **one request per underlying**. If no, we must pull the whole chain and filter locally. |
+| 2 | Do chain items carry **Greeks**, or only contract identity? `OptionExData` and `OptionBasicQotExData` suggest Greeks live in snapshot data, not the chain. | If Greeks need per-contract snapshots, a 9-expiry x 61-strike x 2-side chain is ~1,000 extra requests per underlying - completely impractical. Combined with (1), a server-side delta filter may cut that to ~20-40. |
+| 3 | What are the **actual request quotas**? History quota reported 1,000 remaining; snapshot and subscription limits are unmeasured. | Sizes the request queue and decides scan cadence. Guessing here produces a scanner that works for nine symbols and gets throttled at forty. |
+| 4 | What is the **maximum concurrent subscription count**? `Qot_Sub` is mandatory for current-session bars. | If the cap is below the watchlist size, the scanner needs a subscribe/unsubscribe rotation rather than subscribing to everything once. |
+
+**If (1) and (2) both come back unfavourable** - no server-side filter and no Greeks in the
+chain - the candidates pane needs a different approach entirely: estimate delta locally from
+spot, strike, IV and DTE, then snapshot only the handful of contracts that estimate into the
+band. That is a materially different piece of work and is exactly why these are checked
+first rather than discovered mid-build.
+
+### 4e.2a PROBE RESULTS — 2026-08-04, live gateway
+
+| # | Question | Answer |
+|---|---|---|
+| 1 | Server-side delta filtering on the option chain? | **YES.** `QotGetOptionChain` accepts a `DataFilter` with `DeltaMin`/`DeltaMax`. AAPL returned **575 contracts unfiltered, 10 with the 0.60-0.70 band applied.** |
+| 3 | History request quota | 1 used, **999 remaining**. Not a constraint at this scale. |
+| 4 | Subscription budget | 1 used, **999 remaining**, 1 connection. Comfortably above any realistic watchlist - **no subscribe/unsubscribe rotation needed.** |
+| 2 | Greeks in the chain, or snapshots required? | Not separately confirmed, and **no longer decisive** - see below. |
+
+**This settles the candidates architecture.** The feared case was ~1,000 requests per
+underlying: pull the whole chain, then snapshot every contract for Greeks. With server-side
+filtering the chain returns roughly ten contracts, and `GetSecuritySnapshot` accepts a
+*list*, so even if Greeks require snapshots the whole pane costs **two requests per
+underlying** - one filtered chain, one batched snapshot. Possibly one, if the chain carries
+Greeks directly. Either way it is comfortably viable, and the fallback design (estimate
+delta locally, snapshot only near-band contracts) is not needed.
+
+Consequence for `DeltaTargetRanker`: the gateway now does the coarse filtering, so the
+ranker's band check becomes a **safety net rather than the primary filter**. It stays -
+the mock has no server-side filtering, and a provider that silently stopped honouring the
+filter should not be able to push out-of-band contracts into the list unnoticed.
+
+### 4e.3 Quirks already confirmed — must be implemented
+
+All three verified against the live gateway on 2026-08-04 and documented on
+`IMarketDataProvider.GetBarsAsync`:
+
+1. `RequestHistoryKL` serves **completed days only** - returns zero bars for the current
+   session. Today's bars need `Qot_Sub` then `GetKL`. The adapter stitches both.
+2. **`ExtendedTime` must be set** or no premarket bars arrive, which means no premarket
+   high or low, which means **PATH-3 can never fire**.
+3. Bars are stamped with their **CLOSE time**. Passed through unchanged, the half-open
+   09:30-09:45 window captures two bars instead of three and silently produces a wrong
+   opening range.
+
+### 4e.4 Work breakdown
+
+| # | Component | Notes |
+|---|---|---|
+| 1 | `MoomooConnection` | Singleton `FTAPI` wrapper per the spec's state-management rule. Connect, monitor, reconnect, surface state. |
+| 2 | `RequestQueue` | Throttled and quota-aware. Sized from 4e.2 (3). |
+| 3 | `MoomooMarketDataProvider` | Implements `IMarketDataProvider`; handles all three quirks above. |
+| 4 | Symbol mapping | Ticker to `QotCommon.Security`. US equities only initially. |
+| 5 | Provider selection | Mock vs live, plus a prominent UI indication of which is active. |
+| 6 | Tests | The adapter's mapping logic - timestamp conversion, extended-hours stitching, chain projection - is pure and unit-testable against captured responses. The socket layer is not. |
+
+### 4e.5 DECISIONS TAKEN 2026-08-04
+
+| Decision | Outcome |
+|---|---|
+| OpenD not running | **Show a disconnected state and scan nothing.** Never silently substitute synthetic prices. |
+| Provider selection | **Config file, read once at startup.** No runtime switching - the provider is a singleton holding a socket and live subscriptions, and swapping it live means unsubscribing, disposing, reconnecting and re-seeding every cached ViewModel. That is a large bug surface for a setting that changes approximately never. Startup-only makes the provider immutable for the process lifetime, which is the simplest available invariant. |
+| Bars | **Request each timeframe directly from moomoo. No local aggregation on the live path.** Local aggregation already produced a real defect here (partial buckets corrupting the opening range), broker-supplied bars cannot disagree with the broker's own charts, and the "drop the still-forming bar" guard is needed either way - so aggregation adds bucket-alignment risk while removing nothing. moomoo serves 1/3/5/15 natively. |
+| Synthetic data | **Not available in normal operation.** Stated requirement: once live data is connected, synthetic data is for explicit testing only. See 4e.5a. |
+
+### 4e.5a Synthetic data containment
+
+The mock stays valuable as a test double and an offline development path, but it must be
+impossible to end up on it by accident:
+
+* The config default is **live**. A missing, malformed or deleted config file lands on
+  moomoo, never on synthetic data. The safe state is the default rather than something that
+  has to be selected correctly.
+* The opt-in value is deliberately named for what it is - a testing mode - rather than
+  something neutral like "Mock" that could be set casually.
+* When synthetic data is active the application shows a **persistent, unmissable banner**,
+  not the small nav-rail label used today, and logs a warning at startup.
+
+The reasoning is worth stating plainly: an application that quietly serves invented prices
+while looking exactly like it is serving real ones, in a tool used to size real trades, is
+the most damaging failure this codebase could produce. Every measure above exists to make
+that state loud rather than to make it unreachable - unreachable would cost the offline
+development path, but loud costs nothing.
+
+### 4e.5b Superseded questions
+
+1. **How is the provider selected?** Config file, in-app setting, or command-line switch.
+2. **What happens when OpenD is not running?** Recommendation: show a clear disconnected
+   state and scan nothing. **Never silently fall back to the mock** - an app that quietly
+   substitutes synthetic prices for real ones, in a tool used to make trading decisions, is
+   the most dangerous failure this codebase could have.
+3. **Keep the mock?** Recommendation: yes. It is the test double and the offline
+   development path, and it costs nothing to retain.
+4. **Fetch 1-minute bars and aggregate, or request each timeframe directly?** Aggregating
+   locally gives one cache serving every timeframe and exact control over bucket
+   boundaries; requesting directly is fewer bars over the wire. Depends on 4e.2 (3).
+
+### 4e.6 Sweep-up items that become real with live data
+
+* **Unknown symbols currently fail silently.** Adding a ticker the provider does not know
+  returns an empty list - blank row, no alerts, no error. Harmless with a 12-symbol mock;
+  with real data it will be hit by any typo or delisted ticker.
+* **The chart always fetches the most recent bars**, regardless of when the alert fired. An
+  older alert is charted against today's price action. The out-of-range notice explains it
+  but does not fix it; the fix is fetching the alert's own session.
+* **Navigation double-activation** from Phase 1 remains undiagnosed.
+
+## 4f. PHASE 3 BUILD — 2026-08-04
+
+Delivered:
+
+* `MarketDataOptions` / `appsettings.json` - provider, host, port, timeframe, scan cadence
+  and the delta band, all configurable. **Defaults to live**; a missing or malformed file
+  lands on moomoo, never on synthetic data.
+* `MoomooConnection` - singleton gateway wrapper. Adapts the SDK's callback model into
+  awaitable calls by parking a TaskCompletionSource per serial number. Every wait is
+  bounded; a disconnect fails all outstanding waiters immediately rather than leaving a
+  scan cycle hanging until timeout.
+* `MoomooMarketDataProvider` - implements `IMarketDataProvider` and handles all three
+  verified quirks: history-plus-GetKL stitching for the current session, `ExtendedTime` for
+  premarket bars, and the close-to-open timestamp correction.
+* `MoomooMapping` - the pure, testable half: security construction, K-line to bar with the
+  timestamp correction, snapshot and option-quote projection.
+* `MoomooStartupService` - connects at startup. A failed connect is **not** a startup
+  failure; the app comes up disconnected so the user can see why.
+* `DeltaTargetRanker` reworked to the stated rule - hard band 0.60-0.70, ranked by
+  proximity to 0.65, with tradability filters applied before ranking rather than scored.
+* Synthetic-data banner - full width, high contrast, shown whenever generated data is
+  active, plus a startup warning in the log.
+
+`ScannerHostedService` now takes its cadence and timeframe from configuration and passes
+the timeframe to the strategy, so the bars requested and the bars evaluated cannot disagree.
+
+**First live run: connected to OpenD at 127.0.0.1:11111.**
+
+## 4g. LIVE ADAPTER VERIFICATION — 2026-08-04 evening
+
+The option-chain half of the adapter had been written against the futu assembly's API
+surface and never against a real response, and the standalone probe in `tools/` could not
+close that gap - it reimplements its own mapping, so it can only show that the gateway
+returns data, never that **this application's** projection of it is right.
+
+`--probe-live SYMBOL out.txt` runs the production classes end to end: the real connection,
+provider, mapping and ranker. Raw protobuf counts are printed beside the mapped results,
+because "no candidates" has two very different causes - an empty chain from the gateway
+versus a mapping that dropped everything - and from the outside they are identical.
+
+It found four defects on the first run, three of them shipping bugs.
+
+### 4g.1 Option chain: every live request was being rejected
+
+`Get Option Chain` caps its window at 30 days. The provider asked for 45 and the gateway
+answered `RetType -1`, *"the requested time span cannot exceed 30 days"*. A rejected
+response is not an exception - it was logged as a warning and an empty list was returned -
+so **the candidates pane silently showed nothing for every symbol, on every request**, and
+the app looked like a working app with no qualifying contracts.
+
+Fixed at 28 days. With that, AAPL returns 10 contracts and the whole path is now verified
+live: the server-side delta filter is honoured (all 10 between 0.61 and 0.70), `OptionExData`
+populates strike, expiry, IV, OI and all four Greeks, no contract is dropped by
+`ToOptionQuote`, and `DeltaTargetRanker` produces 8 ranked candidates. **The least certain
+part of the adapter is now the best evidenced.**
+
+One judgement call is worth a look. The rule as stated ranks by proximity to 0.65 with
+spread as a tie-break only, so the top pick was `305C 08-17` at delta 0.6485 with a **26%
+bid/ask spread**, ranked above `305C 08-14` at delta 0.6402 with a 10% spread. That is the
+stated rule working correctly; whether a quarter of the position given up on entry should
+lose to a 0.008 delta difference is a rules question, not a bug.
+
+### 4g.2 EndTime is exclusive - PATH-3 could never fire on the live session
+
+The most damaging of the four, and it had been hiding behind a wrong conclusion recorded in
+4c.2a. `RequestHistoryKL`'s `EndTime` is **exclusive**. An end of "today" returns data up to
+*yesterday's* close, which is what made the call look like it "serves completed days only" -
+and why a today-only request appeared to return nothing, when it was simply an empty range.
+
+Consequence: today's premarket bars were always missing. No premarket high or low was ever
+computed for the current session, so **PATH-3 could not fire on the day being traded**, and
+the chart popup drew no premarket levels for today. Nothing failed. The numbers were just
+quietly absent.
+
+Measured rather than inferred, by issuing each bar source separately:
+
+| Request | Bars | Range | Today |
+|---|---|---|---|
+| history, `ExtendedTime=false`, end=T | 390 | 07-28 09:30 .. 08-03 15:55 | 0 |
+| history, `ExtendedTime=true`, end=T | 960 | 07-28 04:00 .. 08-03 19:55 | 0 |
+| history, `ExtendedTime=true`, **end=T+1** | 1000 | 07-28 04:00 .. **08-04 07:15** | **40, all premarket** |
+| `Qot_Sub` + `GetKL` | 1000 | 07-17 10:40 .. 08-04 15:55 | 78, none premarket |
+
+That table also settles a second point: `ExtendedTime` was working correctly all along. The
+first draft of the probe's own diagnostic blamed it, which was wrong - and is exactly why the
+per-leg breakdown was worth building before changing any code.
+
+Two fixes followed. `EndTime` is now T+1. And the lookback dropped from 7 days to 3, because
+**the gateway truncates an over-long response from the newest end**: with extended hours a
+5-minute session is 192 bars, seven days overruns the 1000-bar cap, and the response comes
+back a plausible-looking thousand bars with *today's later bars* missing. The T+1 row above
+shows precisely that, ending at 07:15.
+
+`Qot_Sub` + `GetKL` is still issued and stitched in. It is the path guaranteed to carry the
+most recently closed bar, the merge is keyed on timestamp so overlap is harmless, and
+keeping it costs one request.
+
+### 4g.3 The scanner raced the gateway on startup
+
+The scanner and the connector start together and connecting takes a moment, so the first
+cycle ran against a provider that was not connected yet. Every symbol returned an empty bar
+list and the cycle silently did nothing - a freshly launched app sat blank for a full scan
+interval with no indication anything was wrong. The first cycle now waits up to 15s for the
+connection. A timeout is not an error: the scanner still starts and cycles, which is the
+intended disconnected behaviour.
+
+### 4g.4 Alert provenance
+
+`alerts.jsonl` had been mixing synthetic and live records with nothing to tell them apart,
+which quietly poisons the one artefact the log exists for. `AlertRecord` now carries
+`data_source`, taken from `IMarketDataProvider.DataSource` at publication - from the object
+that actually produced the bars, so the label cannot drift from reality. Null means unknown,
+not real. The mixed file was archived to
+`alerts.mixed-synthetic-and-live.2026-08-04.jsonl`.
+
+### 4g.5 Verified live, after the fixes
+
+15 alerts, all stamped `2026-08-04`, all `data_source: moomoo`, **all 15 carrying premarket
+levels** where previously every one was null. PATH-1 x11, PATH-2 x1, PATH-3 x3 - and the
+PATH-3 geometry rule holds on the live data (AMZN premarket high 280.0115 above an ORB high
+of 280). Opening range locks from exactly three 5-minute bars, confirming the
+close-to-open timestamp correction against real data for the first time. 77 tests passing.
+
+## 4h. CHART POPUP SCOPED TO ONE SESSION — 2026-08-04
+
+Reported from `screenshots/Chart Popup error.png`: the NVDA popup was drawing several days
+at once, with the session of interest crushed into a sliver at the right-hand edge.
+
+Cause: the popup asked for the most recent N bars and drew all of them. That was harmless
+against the mock, which generated a single day. The live adapter serves several days so the
+strategy has history to work from, and the chart inherited all of it.
+
+Two changes to `ChartViewModel`:
+
+* **Bars and alerts are filtered to the session the focused alert fired in**, not to a
+  trailing slice. This also retires the separate outstanding item about older alerts being
+  charted against today's price action - the day drawn is now always the day the signal
+  fired. Alerts are filtered by session too: without that, yesterday's signals travel with
+  the list and land on today's candles at whatever time of day happens to match, which is
+  indistinguishable from a real flag.
+* **The window is premarket open to regular close, 04:00-16:00.** Premarket stays because
+  PATH-3 fires against its levels and those levels are drawn. After-hours is dropped because
+  it is not traded off this window and it distorts what the window is for - NVDA ran four
+  points after 16:00 on 2026-08-04, which rescaled the price axis and squeezed the entire
+  regular session, opening range included, into the lower third. Bars up to the last alert
+  are kept regardless, so a signal outside those hours still has its candle under it.
+
+Verified with `--render-alert TICKER out.png`, a new headless path that drives the real
+`ChartViewModel` against the real provider, seeded from a real record in `alerts.jsonl`.
+`--render-sample` could not have caught this: it renders a hand-built session, so it proves
+the renderer draws correctly but nothing about what the provider actually returns.
+
+The re-render also confirms the 4g.2 fix on screen - the premarket levels that used to show
+as em dashes now draw as PM 211.88 and PM 206.64.
+
+**Known, not fixed:** alert labels collide with the right-edge level labels when a signal
+fires near the end of the session, and an alert label drawn over dense candles is hard to
+read. Cosmetic, and visible in the verification render.
+
+## 4i. FLAGS WERE ONE CANDLE TO THE RIGHT — 2026-08-04
+
+Spotted on the render from 4h: PATH-1 was drawn on the candle *after* the one whose body
+closed out of the range.
+
+**Alerts and bars use opposite ends of the same candle.** A signal is stamped with the bar's
+CLOSE - `bar.Timestamp.AddMinutes(timeframe)`, the moment the setup became knowable, which is
+the right thing for an alert to carry. Bars are stamped with their OPEN, which is where the
+candle is plotted. The close of bar N is numerically identical to the open of bar N+1, so
+every flag rendered exactly one candle late, sitting on a bar that did nothing.
+
+On a breakout this is not cosmetic. The candle the eye lands on is not the one that closed
+outside the range, so the distance being judged - the entire reason the window is opened - is
+measured from the wrong candle.
+
+`NearestBar` actively concealed it. Given a close time, the gap to bar N's open is one
+bar-length and the gap to bar N+1's open is zero, so "nearest" confidently returned the wrong
+bar and the flag looked deliberately placed.
+
+Fixed by deriving the triggering bar's open (`alertAt - timeframe`), snapping to the nearest
+real bar so a timeframe mismatch cannot drop a flag into a gap, and using **that bar's own
+timestamp** as the x-position. The flag can now only ever land on a real candle.
+
+**A second defect fell out of the same mismatch.** The range filter compared a close-stamped
+alert against bar open times, so an alert on the final plotted candle sat one bar-length past
+`lastBar` and was filtered out entirely - the last signal of a session silently lost its
+flag. Now compared on the triggering bar's open.
+
+Verified against live records: NVDA's 10:00 SHORT (close 210.04, below the 210.35 range low)
+now flags the 09:55 bar, and the 14:30 LONG (close 212.57, above the 212.17 high) now flags
+the 14:25 bar.
+
+### 4i.1 Moved into Core and covered — 2026-08-04
+
+The arithmetic now lives in `Core/Charting/AlertBarLocator`, an assembly with no rendering
+dependency, because it had been wrong twice and could only ever be checked by looking at a
+picture. `ChartRenderer` calls it and holds no timestamp logic of its own.
+
+`FindTriggerBar` returns a bar **index or -1**, which collapses what had been two separate
+steps - filter to the plotted window, then locate the bar - into one call that cannot
+disagree with itself. The two had previously used different comparisons, which is precisely
+how the last-bar alert came to be dropped.
+
+Out-of-range alerts return -1 rather than snapping to the nearest bar. The log persists
+across restarts so older sessions routinely travel with the list, and snapping would paint a
+flag onto an unrelated candle - inventing a position silently is worse than declining to draw
+one, and cannot be undone downstream.
+
+Flags are now grouped by **resolved bar index** rather than by exact timestamp, so anything
+landing on one candle merges into a single flag even if the timestamps differ slightly. The
+old grouping only merged byte-identical timestamps.
+
+**12 tests, 89 total.** Both live failures are pinned: the flag one candle to the right, and
+the final signal of a session vanishing. Also covered - first bar, empty chart, alerts either
+side of the plotted range, timeframe mismatch snapping, simultaneous PATH-1/PATH-3 resolving
+together, and all four supported timeframes.
+
+The re-render after the refactor is **byte-identical** to the one before it, so the move
+changed structure and coverage without touching behaviour.
+
+## 4j. TOP-PICK HIGHLIGHT — 2026-08-05
+
+Decision: **Probability of Profit is deferred.** The options engine's EV formula stays
+unbuilt for now, and the candidates pane ranks on the delta criteria alone. Q4 in section 2
+remains open rather than answered - it blocks only the EV ranking, not this.
+
+The highest-ranked contract is now marked in the pane. Two treatments, deliberately not one:
+
+* A tinted row background, `DataGridRowCandidate`, which hover and selection still override
+  so the highlight never swallows normal row feedback.
+* A **"TOP" badge** in the contract cell. The contract text's colour already carries
+  call-versus-put, so recolouring it to mean "best" would overload a channel that already
+  means something else. Colour alone would also be the only cue, and this pane is read
+  quickly - the badge survives a glance.
+
+`IsTopPick` is carried as a flag on the row rather than inferred from its index, because the
+grid is sortable: click a column header and the visually first row is no longer the ranked
+first, but the ranker's choice has not changed. The flag stays with the contract.
+
+Set in `DashboardViewModel` from the ranker's ordering rather than inside `IOptionRanker` -
+which contract wins is a strategy question, whether it is highlighted is a presentation one.
+
+**That makes best-first ordering load-bearing**, where before it was a convenience. A change
+returning the same contracts unsorted would leave the pane confidently marking the wrong
+contract with nothing about the display looking broken, so `ResultsAreOrderedBestFirst` now
+pins the whole ordering rather than just the first element. 90 tests.
+
+**Not seen on screen.** The pane has never been observed populated - the option chain only
+began returning data on 2026-08-04 evening - so this is verified by build and by the ranker's
+ordering, not by looking at it.
+
+## 4k. LIVE SESSION, 2026-08-05 09:35 ET
+
+First run with the market open. Three things could only ever be measured here.
+
+* **The premarket fix holds during the session.** 66 premarket bars for today, so PATH-3 is
+  live-capable. Every previous check was after the close, where a stale `EndTime` would have
+  looked identical.
+* **The option chain works live.** 12 AAPL contracts, all Greeks populated, 8 ranked.
+* **Time-share is now definitively ruled out**, not merely inconclusive. `Qot_GetRT` returned
+  6 points beginning 09:31 - regular session only, no premarket coverage. The earlier empty
+  result was an after-hours artefact; this is a measured no.
+
+Also confirmed by reading the code rather than waiting for a symptom: bars inside 09:30-09:45
+only accumulate and return, so nothing can fire off a partially formed opening range.
+
+**Probe diagnostic corrected.** It reported "opening range 1 bars (expected 3) <-- WRONG"
+when run at 09:35. The range had simply not finished forming. A check that cries wolf every
+morning is a check that stops being read, so it now says "still forming" until 09:45.
+
+## 4l. ALERT LIST SHOWS TODAY ONLY — 2026-08-05
+
+The log persists across restarts, so the window opened with 15 alerts from the previous
+session ahead of anything from today.
+
+**The file is not touched.** `alerts.jsonl` stays append-only and untrimmed - it is the
+substrate for backtesting, and clearing or splitting it to tidy a display would trade a
+permanent record for a cosmetic problem. Rotating into a second history file was considered
+and rejected for the same reason: a backtest would then have to read two files and reason
+about the boundary between them.
+
+Instead the **view** filters to the current session date, with an `earlier sessions (N)`
+checkbox. The count is deliberately visible - a list that silently omits records is worse
+than a cluttered one, because nothing on screen would say the filter was on.
+
+`_loaded` holds everything read plus everything raised since, so toggling the filter is a
+re-bind rather than a re-read. Re-reading would put disk I/O behind a checkbox and would race
+any alert arriving mid-read.
+
+Verified live: `Replayed 15 alerts, 0 from today` - the previous session's alerts are loaded
+and available but no longer occupy the list.
+
+## 4m. DUPLICATE ALERTS — 2026-08-05
+
+Seen on screen (`screenshots/Duplicate_Alert.png`): AMD listed three times at 09:50 and TSLA
+twice at 10:10, identical ticker, path, direction and trigger price.
+
+Two independent causes, both structural rather than accidental:
+
+1. **The scanner keeps no state across restarts.** Every launch re-evaluates the whole of
+   today's session and re-publishes signals that already fired, appending a fresh copy of
+   each to the log. The log is what backtests read, so those copies would inflate the
+   apparent frequency of every setup.
+2. **Publish persists, then raises.** An alert published while the dashboard is mid-replay
+   arrives twice - once from the live event, once from the file being read underneath it.
+   The live log shows the race directly: `AMD at 500.9` written at 10:18:04.370,
+   `Replayed 39 alerts` at 10:18:04.466.
+
+Fixed with `AlertRecord.Identity` - ticker, strategy, path, direction and bar timestamp -
+applied in both places: the store refuses an identity already on disk, and the dashboard
+refuses one already listed.
+
+Deliberately **not** a record equality override. `AlertRecord` is a serialization shape and
+value equality over every field is the right default for it; this asks the narrower question
+"is this the same signal", and so ignores `DataSource`, which describes provenance rather
+than the setup.
+
+Direction and path are part of the identity because **PATH-1 and PATH-3 on one candle is a
+real pair, not a duplicate** - a close clearing both the opening range and a premarket level
+is genuinely two signals, and collapsing them would discard the stronger confirmation. The
+user confirmed this reading independently on MSFT at 09:50.
+
+Five tests: same signal twice, a simulated restart, both paths on one bar, both directions on
+one bar, and the same setup on a later bar. 95 total.
+
+### Confirmed working live, 2026-08-05
+
+Watchlist quotes, the `earlier sessions` filter, the candidates pane populated with the TOP
+badge, adding a ticker mid-session, the chart popup scoped to one session, and PATH-1 landing
+on the correct candle - all seen on screen for the first time.
+
+### Resolved: the 39-versus-15 alert file
+
+Not a product bug. The dashboard displayed `earlier sessions (35)` and `7 this session` -
+42 records, 35 of them older than today - which can only have come from the log. The file
+therefore holds at least 35 pre-today records while this environment's shell reads 15, so
+**the shell's view of that path is stale**, almost certainly an overlay left by the rename
+performed on 2026-08-04. That rename never reached disk either, which is why the "archived"
+file still appears to hold exactly the records written at 21:55 that evening.
+
+Consequence worth remembering: **`alerts.jsonl` cannot be verified from the agent shell.**
+Read it from the application, or from a shell the user runs. A false persistence bug was
+reported on the strength of that stale view before the dashboard's own counters settled it.
+
+## 4n. UNKNOWN SYMBOLS AND CHART LABELS — 2026-08-05
+
+**Unknown symbols now fail at the point of adding.** A typo previously produced a permanently
+blank watchlist row that never alerted and never explained itself, because every call for it
+returns an empty list. `AddSymbolAsync` resolves the symbol against the provider first and
+refuses it with a message. Adding is the only moment the user still has the context to fix
+it. Duplicates are rejected the same way.
+
+A disconnected gateway does **not** block the add - the symbol is probably fine, and refusing
+it would block the user for a reason unrelated to what they typed. It goes in unverified.
+
+**Chart labels.** Three compounding problems, fixed together and verified by re-render:
+
+1. Coloured text over a dense candle field was unreadable. Labels now draw on an opaque
+   plate in the panel colour.
+2. Late-session flags overprinted the ORB and premarket labels pinned to the right edge.
+   Labels within the last 12% of the plot are pulled inward.
+3. The plate then made stacked labels collide - PATH-1 and PATH-2 smearing together, which is
+   precisely the break-then-confirm sequence the window exists to read. Tier spacing widened,
+   and **consecutive tiers alternate sides**. Vertical spacing alone could not fix it: a label
+   is wider than several bars, so flags a few bars apart overlap horizontally however far
+   they are stacked, and a gap wide enough to clear that would throw flags off the plot.
+
+### Build hygiene
+
+Debug and Release drifted once and cost real time - a stale Release binary from before the
+session filter produced 38 historical alerts and no filter UI, and read as a fresh bug. Both
+configurations are now built together every time.
+* Watchlist quotes now poll `GetSnapshotsAsync` every 5s via `SubscribeAsync`, but this has
+  **not been seen on screen** - only the wiring is verified.
+* Option ranking treats a 26% bid/ask spread as a tie-break. See 4g.1.
+* Unknown symbols still fail silently.
+* The chart always fetches the most recent bars regardless of the alert's date.
+* Navigation double-activation from Phase 1 remains undiagnosed.
+* The request queue described in 4e.4 is not built. The measured budget (999 remaining on
+  both history and subscriptions) makes it unnecessary at current watchlist sizes, but it
+  will be needed before the universe grows.
+
+## 4o. ORDER ROUTING — 2026-08-05/06
+
+Built and proven end to end on a paper account. Scope is **entry only**: the app exists to
+save clicks timing an entry, and the position is then managed in the moomoo app. Kill
+switches, daily loss limits and position management were raised and **explicitly rejected** -
+a guard rail here is bypassable by opening moomoo, so it buys nothing.
+
+Delivered: `MoomooTradeConnection` (a socket separate from quotes, so a quote-side fault
+cannot disturb the money path), `MoomooTradingService`, `ITradingService`, `OrderAuditLog`,
+and a Trading page with account picker, ticket and order tracker.
+
+Safety properties, all deliberate:
+
+* **Two steps to send.** Filling a ticket arms it; a separate confirmation restates account,
+  environment, side, quantity, contract and price exactly as they will be transmitted.
+* Paper preselected; switching accounts **clears any armed confirmation**, because that
+  confirmation was for a different account.
+* Limit is the default at the mid; market is opt-in and resets on every new ticket.
+* The live-unlock check lives in the **service**, not just the UI.
+* `orders.jsonl` records every submit, cancel and modify with account and environment,
+  written **before** the request goes out.
+* Nothing places an order automatically - no timer, no hosted service, no alert subscription
+  touches the trading path.
+
+### 4o.1 Trade API findings
+
+| Finding | Consequence |
+|---|---|
+| `Currency` is required on funds and positions, but the gateway only says so for *some* accounts | One account reported assets of 28,309 unset and 3,609 with USD. Buying power from an unset request is simply wrong, and nothing looks broken. |
+| `NeedGeneralSecAccount` defaults to **false** | With it unset the gateway omits general securities accounts - the user's real cash and margin accounts were invisible, and the only live US account on show was a disabled one. |
+| A gateway exposes crypto and prediction-market accounts alongside securities | Filtered to `TrdMarket_US`. A picker offering an options order to a crypto account is a trap. |
+| `Power` is margin buying power, `Cash` is cash | Labelling `Power` "buying power" made the app disagree with the moomoo app. Long options are paid in full, so **Cash** is the constraining number. Both are now shown, named. |
+| Disabled accounts | Excluded from the picker entirely; they can never accept an order. `IsUsable` is retained on the model because an account can be disabled between listing and sending. |
+
+### 4o.2 Alert cutoff
+
+`AlertCutoffTime`, default **14:00**. An opening-range breakout is a claim about the day's
+direction, and one made shortly before the close leaves no time to act. Compared against the
+**bar's close time**, not the wall clock, so a scan running late after a restart still judges
+each signal by when it fired. Suppressed signals are counted and logged - a filter that
+silently removes things is indistinguishable from a strategy that stopped working.
+
+## 4p. BAR CACHE — 2026-08-07
+
+The gateway serves roughly three days, bounded by its 1000-bar response cap, so anything
+older is unavailable. `CachingMarketDataProvider` decorates the provider and accumulates
+completed sessions to `%LOCALAPPDATA%\BreakoutAlerts\bars\TICKER_5m\yyyy-MM-dd.json`.
+
+A decorator rather than a change to the adapter: the moomoo provider carries three verified
+gateway quirks and is the most expensive code here to re-verify, and caching is orthogonal.
+It also makes the cache testable against a substitute with no gateway.
+
+**The current session is never cached.** It is still forming - high, low and bar count all
+change through the day - so a cached copy would freeze a partial day and later serve it as a
+whole one, producing an opening range computed from data that stopped at lunchtime. Pinned by
+test, and it is the failure mode that would look entirely plausible.
+
+Also: live bars win over cached ones on the same timestamp (the gateway copy may carry a
+later correction); a corrupt cache file is a **miss, never an exception**; timeframes are
+stored separately. 12 tests, 110 total.
+
+Unlocks the chart for alerts older than three days **going forward** - the cache cannot
+recover history it never saw - and gives previous-session data for strategies that need it.
+
+## 4q. OVERNIGHT DATA: NOT AVAILABLE — 2026-08-07
+
+Measured for the planned ZEBRA strategy, which tests whether a level was traded during
+extended hours.
+
+```
+hours present        4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19
+bars in 20:00-04:00  0   <-- NO OVERNIGHT COVERAGE
+```
+
+`ExtendedTime` K-lines cover **04:00-20:00 only**. The 20:00-04:00 overnight block has no bar
+data at any timeframe. Snapshots carry aggregate `OvernightPrice` / `OvernightVolume` fields
+but **no overnight high or low**, so they cannot answer whether a zone was touched.
+
+**Consequence for ZEBRA.** After-hours (16:00-20:00) and premarket (04:00-09:30) can be
+tested precisely; 20:00-04:00 cannot. The error runs in the dangerous direction: a level
+traded at 2am would read as untested, and the strategy would call a zone clean when it is
+not. Any implementation must state this limit rather than imply full extended-hours coverage.
+Recording overnight ourselves would require the application to run through the night.
+
+## 4r. ALERT LEVELS GENERALISED — 2026-08-07
+
+First of the two ORB-shaped seams, done ahead of a second strategy.
+
+`AlertRecord` carried named columns - `orb_high`, `orb_low`, `orb_duration`,
+`premarket_high`, `premarket_low`. Fine with one strategy; by the fourth the record would
+have been mostly nulls, with nothing to say which applied. Replaced by a single
+`levels` name-to-value map plus a `Level(name)` lookup.
+
+The change was smaller than it looked because `StrategySignal.Context` was **already** a
+name-to-value dictionary - the engine was flattening it on the way to disk. `ToAlert` now
+passes it through whole and no longer names any level, so a new strategy needs no edit there.
+
+**Format compatibility lives in the store, not on the record.** Keeping the old property
+names on `AlertRecord` so they would deserialize would have left the type carrying one
+strategy's vocabulary permanently - the exact coupling this removes. `JsonLinesAlertStore`
+lifts legacy flat columns into the map on read, only when a record has no levels of its own.
+**The file is never rewritten**: it is append-only and it is the backtesting substrate.
+
+### 4r.1 A second parsing path was hiding
+
+The first verification render came back with candles drawn perfectly and **no opening range
+and no premarket lines at all**. `LiveChartRender` was deserializing `alerts.jsonl` itself
+rather than going through the store, so it skipped the migration and every level came back
+empty. The app's own path uses the store and was unaffected.
+
+Worth recording as a general point: a duplicate parsing path does not fail loudly when the
+format moves under it - it silently returns less. The tool now reads through the store, and
+the hand-rolled deserialization is gone.
+
+### 4r.2 Still ORB-shaped
+
+`ChartRenderModel` keeps its named `OrbHigh`/`OrbLow`/`PremarketHigh`/`PremarketLow`
+parameters, deliberately. The renderer draws the first pair as a **shaded band** and the
+second as **dashed lines** - two visual treatments, not four equivalent levels. The right
+generalisation is probably bands and lines, but whether a ZEBRA zone is a band or a line
+depends on its unanswered zone-width definition. Generalising now would mean guessing, then
+refactoring twice - which is what waiting for a second real case is supposed to prevent.
+
+## 5. Safety posture
+
+Building to the spec's stated guardrails, which are sound:
+
+- `TrdEnv.SIMULATE` is the hard default. Switching to `TrdEnv.REAL` requires explicit in-UI confirmation.
+- No code path places a live order without an explicit, separate confirmation step.
+- No credentials in source or config files — Windows DPAPI (`ProtectedData`) only.
+- Request queueing and throttling in front of every OpenD call, per moomoo's documented quotas.
+
+Order-routing capability is deferred to Phase 3 and will be built behind those gates rather than added first and restricted afterwards.
+
+---
+
+## 6. Decisions taken 2026-08-03
+
+| # | Decision | Outcome |
+|---|---|---|
+| 1 | Target framework | **`net10.0` / `net10.0-windows`** — confirmed. `claude.md.txt` updated to match. |
+| 2 | Signal source (Q1) | **Self-contained C# scanner** — confirmed. TradingView is not a signal source; Pine indicators are ported to C# and retained as visual cross-checks. `claude.md.txt` updated. |
+| 3 | Solution name | `BreakoutAlerts` — assumed, no objection raised. |
+| 4 | Alert transport (§3.1) | In-process `IAlertNotificationService` for the UI; `alerts.jsonl` (JSON Lines) as persistence sink; `FileSystemWatcher` for inbound external alerts only. `claude.md.txt` §4 revised with the rationale inline. |
+
+### Still open, not blocking Phase 1
+
+- **Q2, ticker universe** — defaulting to a user-editable watchlist.
+- **Q3, installer technology** — Phase 4; `dotnet publish` alone does not produce one.
+- **Q4, Probability-of-Profit definition** — must be settled before the options engine is built in Phase 2. Delta-proxy and lognormal terminal-distribution approaches rank positions differently.

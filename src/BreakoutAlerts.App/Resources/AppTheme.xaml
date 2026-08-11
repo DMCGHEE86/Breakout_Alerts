@@ -1,0 +1,292 @@
+<!--
+    Application design tokens and control styles.
+
+    Layered ON TOP of WPF-UI's Fluent dark theme rather than replacing it: WPF-UI supplies
+    the control templates, window chrome and Mica backdrop, and this file supplies the
+    palette and the handful of styles specific to a trading dashboard.
+
+    The palette is deliberately low-chroma. On a screen that is watched for hours, the only
+    things that should pull the eye are price direction and a fired alert - so greys carry
+    the structure and saturated colour is reserved for signal.
+-->
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:system="clr-namespace:System;assembly=System.Runtime">
+
+    <!--  ============================================================  -->
+    <!--  PALETTE                                                       -->
+    <!--  ============================================================  -->
+
+    <!--  Surfaces, darkest to lightest. Depth is conveyed by elevation, not by borders.  -->
+    <SolidColorBrush x:Key="AppBackgroundBrush" Color="#0F1115" />
+    <SolidColorBrush x:Key="AppSurfaceBrush" Color="#161920" />
+    <SolidColorBrush x:Key="AppSurfaceElevatedBrush" Color="#1D212A" />
+    <SolidColorBrush x:Key="AppSurfaceHoverBrush" Color="#232833" />
+    <SolidColorBrush x:Key="AppBorderBrush" Color="#282D38" />
+    <SolidColorBrush x:Key="AppBorderSubtleBrush" Color="#1E222B" />
+
+    <!--  Text. Three weights only - more than that and hierarchy stops reading.  -->
+    <SolidColorBrush x:Key="AppTextPrimaryBrush" Color="#E8EBF2" />
+    <SolidColorBrush x:Key="AppTextSecondaryBrush" Color="#98A0B0" />
+    <SolidColorBrush x:Key="AppTextTertiaryBrush" Color="#666E7E" />
+
+    <!--  Accent, used only for selection and focus.  -->
+    <SolidColorBrush x:Key="AppAccentBrush" Color="#4C8DFF" />
+    <SolidColorBrush x:Key="AppAccentDimBrush" Color="#2A4A85" />
+
+    <!--
+        Direction colours. Not pure red/green: pure #FF0000 on a dark background vibrates
+        badly and is the first thing to fail for the most common form of colour blindness.
+        These are shifted toward teal and coral, which stay distinguishable by both hue and
+        luminance.
+    -->
+    <SolidColorBrush x:Key="AppUpBrush" Color="#26D07C" />
+    <SolidColorBrush x:Key="AppDownBrush" Color="#FF5C6C" />
+    <SolidColorBrush x:Key="AppUpDimBrush" Color="#12341F" />
+    <SolidColorBrush x:Key="AppDownDimBrush" Color="#3A1A20" />
+    <SolidColorBrush x:Key="AppWarningBrush" Color="#F5A623" />
+
+    <!--  ============================================================  -->
+    <!--  TYPOGRAPHY                                                    -->
+    <!--  ============================================================  -->
+
+    <system:Double x:Key="FontSizeCaption">11</system:Double>
+    <system:Double x:Key="FontSizeBody">13</system:Double>
+    <system:Double x:Key="FontSizeSubtitle">15</system:Double>
+    <system:Double x:Key="FontSizeTitle">20</system:Double>
+    <system:Double x:Key="FontSizeDisplay">28</system:Double>
+
+    <FontFamily x:Key="AppUiFont">Segoe UI Variable Display, Segoe UI</FontFamily>
+
+    <!--
+        Numeric font. Cascadia Mono is monospaced, so digits occupy identical width and
+        price columns align on the decimal point without any per-cell formatting. Reading
+        a column of proportional-width prices for a misalignment is exactly the kind of
+        avoidable friction that causes misreads during a fast move.
+    -->
+    <FontFamily x:Key="AppNumericFont">Cascadia Mono, Consolas, Courier New</FontFamily>
+
+    <!--  ============================================================  -->
+    <!--  TEXT STYLES                                                   -->
+    <!--  ============================================================  -->
+
+    <Style x:Key="PageTitleText" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource AppUiFont}" />
+        <Setter Property="FontSize" Value="{StaticResource FontSizeTitle}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{StaticResource AppTextPrimaryBrush}" />
+    </Style>
+
+    <Style x:Key="SectionHeaderText" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource AppUiFont}" />
+        <Setter Property="FontSize" Value="{StaticResource FontSizeCaption}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{StaticResource AppTextTertiaryBrush}" />
+        <!--  Letter-spaced small caps read as a label rather than as content.  -->
+        <Setter Property="TextBlock.LineHeight" Value="16" />
+    </Style>
+
+    <Style x:Key="BodyText" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource AppUiFont}" />
+        <Setter Property="FontSize" Value="{StaticResource FontSizeBody}" />
+        <Setter Property="Foreground" Value="{StaticResource AppTextPrimaryBrush}" />
+    </Style>
+
+    <Style x:Key="SecondaryText" TargetType="TextBlock" BasedOn="{StaticResource BodyText}">
+        <Setter Property="Foreground" Value="{StaticResource AppTextSecondaryBrush}" />
+    </Style>
+
+    <Style x:Key="NumericText" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource AppNumericFont}" />
+        <Setter Property="FontSize" Value="{StaticResource FontSizeBody}" />
+        <Setter Property="Foreground" Value="{StaticResource AppTextPrimaryBrush}" />
+        <Setter Property="HorizontalAlignment" Value="Right" />
+    </Style>
+
+    <!--  ============================================================  -->
+    <!--  CARD                                                          -->
+    <!--  ============================================================  -->
+
+    <Style x:Key="Card" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource AppSurfaceBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource AppBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="Padding" Value="16" />
+    </Style>
+
+    <!--  ============================================================  -->
+    <!--  NAVIGATION RAIL                                               -->
+    <!--  ============================================================  -->
+
+    <!--
+        A hand-built rail rather than WPF-UI's NavigationView. NavigationView expects to
+        own page navigation through TargetPageType and a page service, which fights the
+        ViewModel-first navigation used here (a ContentControl with DataTemplates). The
+        rail is simple enough that owning it outright costs less than working around that.
+    -->
+    <Style x:Key="NavRailItem" TargetType="ListBoxItem">
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Margin" Value="8,2" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Foreground" Value="{StaticResource AppTextSecondaryBrush}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                    <Grid>
+                        <Border
+                            x:Name="Bg"
+                            Background="Transparent"
+                            CornerRadius="6" />
+
+                        <!--  Selection indicator: a short accent bar on the leading edge.  -->
+                        <Border
+                            x:Name="Indicator"
+                            Width="3"
+                            Height="18"
+                            HorizontalAlignment="Left"
+                            Background="{StaticResource AppAccentBrush}"
+                            CornerRadius="2"
+                            Opacity="0" />
+
+                        <ContentPresenter Margin="16,9" VerticalAlignment="Center" />
+                    </Grid>
+
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bg" Property="Background" Value="{StaticResource AppSurfaceHoverBrush}" />
+                            <Setter Property="Foreground" Value="{StaticResource AppTextPrimaryBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Bg" Property="Background" Value="{StaticResource AppSurfaceElevatedBrush}" />
+                            <Setter TargetName="Indicator" Property="Opacity" Value="1" />
+                            <Setter Property="Foreground" Value="{StaticResource AppTextPrimaryBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--  ============================================================  -->
+    <!--  DATA GRID                                                     -->
+    <!--  ============================================================  -->
+
+    <!--
+        Grid lines are horizontal only and very low contrast. Full grid lines turn a dense
+        table into visual noise; horizontal rules alone are enough to track a row across.
+    -->
+    <Style x:Key="DataGridBase" TargetType="DataGrid">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="RowBackground" Value="Transparent" />
+        <Setter Property="AlternatingRowBackground" Value="Transparent" />
+        <Setter Property="GridLinesVisibility" Value="Horizontal" />
+        <Setter Property="HorizontalGridLinesBrush" Value="{StaticResource AppBorderSubtleBrush}" />
+        <Setter Property="HeadersVisibility" Value="Column" />
+        <Setter Property="AutoGenerateColumns" Value="False" />
+        <Setter Property="CanUserAddRows" Value="False" />
+        <Setter Property="CanUserDeleteRows" Value="False" />
+        <Setter Property="IsReadOnly" Value="True" />
+        <Setter Property="SelectionMode" Value="Single" />
+        <Setter Property="SelectionUnit" Value="FullRow" />
+        <Setter Property="RowHeight" Value="34" />
+        <Setter Property="FontFamily" Value="{StaticResource AppUiFont}" />
+        <Setter Property="FontSize" Value="{StaticResource FontSizeBody}" />
+        <Setter Property="Foreground" Value="{StaticResource AppTextPrimaryBrush}" />
+        <!--  Virtualisation is essential: an option chain can be thousands of rows.  -->
+        <Setter Property="EnableRowVirtualization" Value="True" />
+        <Setter Property="EnableColumnVirtualization" Value="True" />
+        <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True" />
+        <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling" />
+        <Setter Property="ScrollViewer.CanContentScroll" Value="True" />
+    </Style>
+
+    <Style x:Key="DataGridHeader" TargetType="DataGridColumnHeader">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{StaticResource AppTextTertiaryBrush}" />
+        <Setter Property="FontFamily" Value="{StaticResource AppUiFont}" />
+        <Setter Property="FontSize" Value="{StaticResource FontSizeCaption}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Padding" Value="12,10" />
+        <Setter Property="BorderBrush" Value="{StaticResource AppBorderBrush}" />
+        <Setter Property="BorderThickness" Value="0,0,0,1" />
+        <Setter Property="HorizontalContentAlignment" Value="Left" />
+    </Style>
+
+    <Style x:Key="DataGridHeaderRight" TargetType="DataGridColumnHeader" BasedOn="{StaticResource DataGridHeader}">
+        <Setter Property="HorizontalContentAlignment" Value="Right" />
+    </Style>
+
+    <Style x:Key="DataGridRowBase" TargetType="DataGridRow">
+        <Setter Property="Background" Value="Transparent" />
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{StaticResource AppSurfaceHoverBrush}" />
+            </Trigger>
+            <Trigger Property="IsSelected" Value="True">
+                <Setter Property="Background" Value="{StaticResource AppAccentDimBrush}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!--
+        Candidate rows. Identical to DataGridRowBase except that the contract the ranker
+        chose is tinted. Position in a sorted list is a weak signal when every row looks the
+        same and the pane is being scanned under time pressure - and it stops being a signal
+        at all once a column header is clicked, since the grid re-sorts but the ranking does
+        not. The tint stays with the chosen contract either way.
+
+        Hover and selection still win, so the highlight never blocks the normal feedback of
+        pointing at a row or picking it.
+    -->
+    <Style
+        x:Key="DataGridRowCandidate"
+        BasedOn="{StaticResource DataGridRowBase}"
+        TargetType="DataGridRow">
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding IsTopPick}" Value="True">
+                <Setter Property="Background" Value="#14243D" />
+            </DataTrigger>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{StaticResource AppSurfaceHoverBrush}" />
+            </Trigger>
+            <Trigger Property="IsSelected" Value="True">
+                <Setter Property="Background" Value="{StaticResource AppAccentDimBrush}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="DataGridCellBase" TargetType="DataGridCell">
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Padding" Value="12,0" />
+        <Setter Property="VerticalAlignment" Value="Stretch" />
+        <Setter Property="Foreground" Value="{StaticResource AppTextPrimaryBrush}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="DataGridCell">
+                    <Border
+                        Padding="{TemplateBinding Padding}"
+                        Background="{TemplateBinding Background}">
+                        <ContentPresenter VerticalAlignment="Center" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--  ============================================================  -->
+    <!--  STATUS PILL                                                   -->
+    <!--  ============================================================  -->
+
+    <Style x:Key="Pill" TargetType="Border">
+        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="Padding" Value="10,3" />
+        <Setter Property="Background" Value="{StaticResource AppSurfaceElevatedBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource AppBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+    </Style>
+
+</ResourceDictionary>

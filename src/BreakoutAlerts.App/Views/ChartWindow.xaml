@@ -1,0 +1,172 @@
+<ui:FluentWindow
+    x:Class="BreakoutAlerts.App.Views.ChartWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:conv="clr-namespace:BreakoutAlerts.App.Converters"
+    xmlns:sp="clr-namespace:ScottPlot.WPF;assembly=ScottPlot.WPF"
+    xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+    Title="Chart"
+    Width="1150"
+    Height="720"
+    MinWidth="700"
+    MinHeight="480"
+    Background="{StaticResource AppBackgroundBrush}"
+    ExtendsContentIntoTitleBar="True"
+    WindowBackdropType="Mica"
+    WindowCornerPreference="Round"
+    WindowStartupLocation="CenterOwner">
+
+    <ui:FluentWindow.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVisibility" />
+        <conv:NullableNumberConverter x:Key="NullableNumber" />
+    </ui:FluentWindow.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Grid.Row="0" Title="{Binding Ticker, StringFormat='{}{0} — session chart'}" />
+
+        <!--  Level readout. The numbers behind the drawn lines, so the chart can be checked rather than trusted.  -->
+        <Border
+            Grid.Row="1"
+            Margin="16,4,16,10"
+            Padding="14,10"
+            Background="{StaticResource AppSurfaceBrush}"
+            BorderBrush="{StaticResource AppBorderBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock
+                    VerticalAlignment="Center"
+                    FontSize="20"
+                    FontWeight="SemiBold"
+                    Foreground="{StaticResource AppTextPrimaryBrush}"
+                    Text="{Binding Ticker}" />
+
+                <Rectangle
+                    Width="1"
+                    Margin="16,3"
+                    Fill="{StaticResource AppBorderBrush}" />
+
+                <TextBlock
+                    VerticalAlignment="Center"
+                    Style="{StaticResource SecondaryText}"
+                    Text="ORB" />
+                <TextBlock
+                    Margin="8,0,0,0"
+                    VerticalAlignment="Center"
+                    FontFamily="{StaticResource AppNumericFont}"
+                    FontSize="13"
+                    Foreground="{StaticResource AppAccentBrush}"
+                    Text="{Binding OrbLow, Converter={StaticResource NullableNumber}}" />
+                <TextBlock
+                    Margin="4,0"
+                    VerticalAlignment="Center"
+                    Foreground="{StaticResource AppTextTertiaryBrush}"
+                    Text="–" />
+                <TextBlock
+                    VerticalAlignment="Center"
+                    FontFamily="{StaticResource AppNumericFont}"
+                    FontSize="13"
+                    Foreground="{StaticResource AppAccentBrush}"
+                    Text="{Binding OrbHigh, Converter={StaticResource NullableNumber}}" />
+
+                <Rectangle
+                    Width="1"
+                    Margin="16,3"
+                    Fill="{StaticResource AppBorderBrush}" />
+
+                <TextBlock
+                    VerticalAlignment="Center"
+                    Style="{StaticResource SecondaryText}"
+                    Text="Premarket" />
+                <TextBlock
+                    Margin="8,0,0,0"
+                    VerticalAlignment="Center"
+                    FontFamily="{StaticResource AppNumericFont}"
+                    FontSize="13"
+                    Foreground="{StaticResource AppDownBrush}"
+                    Text="{Binding PremarketLow, Converter={StaticResource NullableNumber}}" />
+                <TextBlock
+                    Margin="4,0"
+                    VerticalAlignment="Center"
+                    Foreground="{StaticResource AppTextTertiaryBrush}"
+                    Text="–" />
+                <TextBlock
+                    VerticalAlignment="Center"
+                    FontFamily="{StaticResource AppNumericFont}"
+                    FontSize="13"
+                    Foreground="{StaticResource AppUpBrush}"
+                    Text="{Binding PremarketHigh, Converter={StaticResource NullableNumber}}" />
+
+                <ui:ProgressRing
+                    Width="16"
+                    Height="16"
+                    Margin="20,0,0,0"
+                    IsIndeterminate="True"
+                    Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}" />
+
+                <!--  Explains an unmarked chart rather than leaving the user to wonder.  -->
+                <TextBlock
+                    MaxWidth="420"
+                    Margin="20,0,0,0"
+                    VerticalAlignment="Center"
+                    FontSize="11"
+                    Foreground="{StaticResource AppWarningBrush}"
+                    Text="{Binding OutOfRangeNotice}"
+                    TextTrimming="CharacterEllipsis"
+                    ToolTip="{Binding OutOfRangeNotice}">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Visibility" Value="Visible" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding OutOfRangeNotice}" Value="{x:Null}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </StackPanel>
+        </Border>
+
+        <Grid Grid.Row="2" Margin="16,0,16,16">
+            <Border
+                Background="{StaticResource AppSurfaceBrush}"
+                BorderBrush="{StaticResource AppBorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8">
+                <!--
+                    Plot content is built imperatively in code-behind. ScottPlot has no
+                    binding surface, and wrapping it in one for a window that renders once
+                    and never updates would be ceremony without benefit.
+                -->
+                <sp:WpfPlot x:Name="Plot" Margin="6" />
+            </Border>
+
+            <TextBlock
+                MaxWidth="420"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Foreground="{StaticResource AppDownBrush}"
+                Text="{Binding ErrorMessage}"
+                TextAlignment="Center"
+                TextWrapping="Wrap">
+                <TextBlock.Style>
+                    <Style BasedOn="{StaticResource BodyText}" TargetType="TextBlock">
+                        <Setter Property="Visibility" Value="Visible" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding ErrorMessage}" Value="{x:Null}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </Grid>
+    </Grid>
+</ui:FluentWindow>

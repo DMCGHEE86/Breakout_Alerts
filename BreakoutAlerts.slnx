@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/BreakoutAlerts.App/BreakoutAlerts.App.csproj" />
+    <Project Path="src/BreakoutAlerts.Core/BreakoutAlerts.Core.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/BreakoutAlerts.Core.Tests/BreakoutAlerts.Core.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/BreakoutAlerts.OpenDProbe/BreakoutAlerts.OpenDProbe.csproj" />
+  </Folder>
+</Solution>

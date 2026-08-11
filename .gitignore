@@ -1,0 +1,112 @@
+# ---------------------------------------------------------------------------
+# Build output
+# ---------------------------------------------------------------------------
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]64/
+publish/
+artifacts/
+*.dll
+*.exe
+*.pdb
+*.cache
+
+# ---------------------------------------------------------------------------
+# IDE and editor
+# ---------------------------------------------------------------------------
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userprefs
+*.sln.docstates
+*.DotSettings.user
+
+# ---------------------------------------------------------------------------
+# Test and coverage output
+# ---------------------------------------------------------------------------
+[Tt]est[Rr]esult*/
+coverage*.json
+coverage*.xml
+coverage*.info
+*.opencover.xml
+*.coverage
+*.coveragexml
+BenchmarkDotNet.Artifacts/
+
+# ---------------------------------------------------------------------------
+# NuGet
+# ---------------------------------------------------------------------------
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+!packages/build/
+
+# ---------------------------------------------------------------------------
+# Runtime data - NEVER COMMIT
+# ---------------------------------------------------------------------------
+# These normally live in %LOCALAPPDATA%\BreakoutAlerts and so are outside the
+# repository, but they are listed here because a stray copy in the working tree
+# would publish real trading activity:
+#
+#   alerts.jsonl   every signal, with prices and timestamps
+#   orders.jsonl   every order submitted, with account numbers
+#   watchlist.json the symbols being traded
+#   bars/          cached market data, which is the vendor's, not ours
+#
+# The order log is the sensitive one. It contains broker account identifiers.
+*.jsonl
+watchlist.json
+bars/
+logs/
+*.log
+
+# ---------------------------------------------------------------------------
+# Local configuration
+# ---------------------------------------------------------------------------
+# appsettings.json IS committed - it holds no secrets, only the provider choice,
+# host, port and tuning values, and the defaults must travel with the code.
+# Local overrides are not committed.
+appsettings.local.json
+appsettings.*.local.json
+*.secrets.json
+
+# ---------------------------------------------------------------------------
+# Credentials - defence in depth
+# ---------------------------------------------------------------------------
+# The application deliberately stores no credentials: the trade password is
+# taken as a parameter, hashed, sent, and dropped, and moomoo OpenD holds the
+# account login itself. These patterns exist so that a file added by hand or by
+# a future change cannot be committed by accident.
+*.pfx
+*.p12
+*.key
+*.pem
+secrets.json
+credentials.json
+.env
+.env.*
+
+# ---------------------------------------------------------------------------
+# OS noise
+# ---------------------------------------------------------------------------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# ---------------------------------------------------------------------------
+# Scratch
+# ---------------------------------------------------------------------------
+scratch/
+tmp/
+*.tmp
+*.bak
