@@ -31,6 +31,7 @@ public sealed class MoomooTradingService : ITradingService
 {
     private readonly MoomooTradeConnection _connection;
     private readonly OrderAuditLog _audit;
+    private readonly OrderLinkStore _links;
     private readonly ILogger<MoomooTradingService> _logger;
 
     /// <inheritdoc />
@@ -49,15 +50,106 @@ public sealed class MoomooTradingService : ITradingService
     public MoomooTradingService(
         MoomooTradeConnection connection,
         OrderAuditLog audit,
+        OrderLinkStore links,
         ILogger<MoomooTradingService> logger)
     {
         _connection = connection ?? throw new ArgumentNullException(nameof(connection));
         _audit = audit ?? throw new ArgumentNullException(nameof(audit));
+        _links = links ?? throw new ArgumentNullException(nameof(links));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
         _connection.ConnectionStateChanged += (_, _) => StateChanged?.Invoke(this, EventArgs.Empty);
+
         _connection.OrderUpdated += (_, order) => OrderUpdated?.Invoke(this, MapOrder(order));
     }
+
+    /// <summary>
+    /// Sends the protective stop alongside the entry, and records the pairing.
+    /// </summary>
+    /// <remarks>
+    /// Measured against a live account: the broker accepts a stop-sell before the position
+    /// exists and rests it next to the unfilled entry. So the stop is placed immediately and
+    /// protection lives at the broker, surviving this application being closed or crashing.
+    ///
+    /// <para>A failed stop leaves the entry working and unprotected. That is logged loudly and
+    /// recorded, never silently swallowed - the user needs to decide whether to pull the entry.
+    /// It is deliberately not treated as a reason to cancel the entry automatically: undoing
+    /// an order the user explicitly confirmed is not this code's call to make.</para>
+    /// </remarks>
+    private async Task PlaceLinkedStopAsync(
+        OrderRequest entry, ulong entryOrderId, decimal stopPrice, CancellationToken ct)
+    {
+        var link = new OrderLink
+        {
+            EntryOrderId = entryOrderId,
+            AccountId = entry.Account.AccountId,
+            Environment = entry.Account.Environment == TradeEnvironment.Live ? "LIVE" : "PAPER",
+            ContractCode = entry.ContractCode,
+            StopPrice = stopPrice,
+            Quantity = entry.Quantity,
+            CreatedAt = DateTimeOffset.Now
+        };
+
+        var stopRequest = entry with
+        {
+            Side = OrderSide.Sell,
+            Pricing = OrderPricing.Limit,
+            LimitPrice = stopPrice,
+            StopLossPrice = null
+        };
+
+        await _audit.WriteAsync(OrderAuditLog.From(stopRequest, "STOP", entryOrderId), ct)
+            .ConfigureAwait(false);
+
+        try
+        {
+            var c2s = TrdPlaceOrder.C2S.CreateBuilder()
+                .SetPacketID(_connection.NextPacketId())
+                .SetHeader(HeaderFor(entry.Account))
+                .SetTrdSide((int)TrdCommon.TrdSide.TrdSide_Sell)
+                // Stop, not StopLimit. A protective stop that cannot fill is not protection.
+                // The trigger goes in AuxPrice; Price is unused for a market-on-trigger stop.
+                .SetOrderType((int)TrdCommon.OrderType.OrderType_Stop)
+                .SetCode(entry.ContractCode)
+                .SetQty(entry.Quantity)
+                .SetAuxPrice((double)stopPrice)
+                .SetSecMarket((int)TrdCommon.TrdSecMarket.TrdSecMarket_US)
+                // GTC, matching what moomoo's own ticket defaults a stop to. A day order would
+                // expire overnight and leave the position bare tomorrow.
+                .SetTimeInForce((int)TrdCommon.TimeInForce.TimeInForce_GTC)
+                .Build();
+
+            var rsp = await _connection
+                .PlaceOrderAsync(TrdPlaceOrder.Request.CreateBuilder().SetC2S(c2s).Build(), ct)
+                .ConfigureAwait(false);
+
+            if (rsp.RetType != (int)Common.RetType.RetType_Succeed)
+            {
+                await _links.SaveAsync(link with { Failure = rsp.RetMsg }, ct).ConfigureAwait(false);
+                _logger.LogError(
+                    "STOP REJECTED for {Contract} (entry {EntryId}): {Reason}. THE ENTRY IS UNPROTECTED.",
+                    entry.ContractCode, entryOrderId, rsp.RetMsg);
+                return;
+            }
+
+            await _links.SaveAsync(link with { StopOrderId = rsp.S2C.OrderID }, ct).ConfigureAwait(false);
+
+            _logger.LogInformation(
+                "Stop {StopId} resting at {Price} for {Qty} {Contract}, linked to entry {EntryId}",
+                rsp.S2C.OrderID, stopPrice, entry.Quantity, entry.ContractCode, entryOrderId);
+        }
+        catch (Exception ex)
+        {
+            await _links.SaveAsync(link with { Failure = ex.Message }, ct).ConfigureAwait(false);
+            _logger.LogError(ex,
+                "STOP NOT PLACED for {Contract} (entry {EntryId}). THE ENTRY IS UNPROTECTED.",
+                entry.ContractCode, entryOrderId);
+        }
+    }
+
+    /// <summary>Order pairings, for display and reconciliation.</summary>
+    public Task<IReadOnlyList<OrderLink>> GetOrderLinksAsync(CancellationToken cancellationToken = default) =>
+        _links.GetAllAsync(cancellationToken);
 
     /// <inheritdoc />
     public Task<bool> ConnectAsync(CancellationToken cancellationToken = default) =>
@@ -264,6 +356,17 @@ public sealed class MoomooTradingService : ITradingService
                 .WriteAsync(OrderAuditLog.From(request, "ACCEPTED", orderId, "accepted"), cancellationToken)
                 .ConfigureAwait(false);
 
+            // The stop goes out NOW, not on fill. Measured against a live account: the broker
+            // accepts a stop-sell before the position exists and rests it alongside the
+            // unfilled entry. That means protection sits at the broker and survives this
+            // application being closed, crashed or restarted - which a fill-triggered stop
+            // never could.
+            if (request.StopLossPrice is { } stopPrice)
+            {
+                await PlaceLinkedStopAsync(request, orderId, stopPrice, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             _logger.LogInformation(
                 "Order {OrderId} placed: {Side} {Qty} {Contract} on {Env} account {AccId}",
                 orderId, request.Side, request.Quantity, request.ContractCode,
@@ -283,9 +386,56 @@ public sealed class MoomooTradingService : ITradingService
     }
 
     /// <inheritdoc />
-    public Task<OrderResult> CancelOrderAsync(
-        TradeAccount account, ulong orderId, CancellationToken cancellationToken = default) =>
-        ModifyAsync(account, orderId, TrdCommon.ModifyOrderOp.ModifyOrderOp_Cancel, 0, 0m, "CANCEL", cancellationToken);
+    /// <remarks>
+    /// <b>Cancels a linked stop before cancelling its entry.</b> moomoo's own ticket cascades -
+    /// pull the entry there and the stop goes with it - but the OpenAPI has no parent/child
+    /// field, so two orders placed through it are independent and the broker will happily leave
+    /// the stop resting. A stop with no position can open a short if margin allows.
+    ///
+    /// <para>The ordering is the point. If the process dies between the two cancels, the
+    /// survivor is an unprotected entry - visible in the order list and harmless until it fills
+    /// - rather than a naked stop able to act on its own.</para>
+    /// </remarks>
+    public async Task<OrderResult> CancelOrderAsync(
+        TradeAccount account, ulong orderId, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(account);
+
+        var link = (await _links.GetAllAsync(cancellationToken).ConfigureAwait(false))
+            .FirstOrDefault(l => l.EntryOrderId == orderId);
+
+        if (link?.StopOrderId is { } stopId)
+        {
+            var stopResult = await ModifyAsync(
+                account, stopId, TrdCommon.ModifyOrderOp.ModifyOrderOp_Cancel,
+                0, 0m, "CANCEL-STOP", cancellationToken).ConfigureAwait(false);
+
+            if (!stopResult.Success)
+            {
+                // Refusing to continue is deliberate. Cancelling the entry now would leave the
+                // stop resting with nothing to protect - exactly the orphan this method exists
+                // to prevent. Better to stop and tell the user than to create it.
+                _logger.LogError(
+                    "Could not cancel stop {StopId} for entry {EntryId}: {Msg}. Entry left in place.",
+                    stopId, orderId, stopResult.Message);
+
+                return OrderResult.Fail(
+                    $"Stop {stopId} could not be cancelled ({stopResult.Message}). " +
+                    "The entry was left alone rather than leaving a stop with no position behind it.");
+            }
+        }
+
+        var result = await ModifyAsync(
+            account, orderId, TrdCommon.ModifyOrderOp.ModifyOrderOp_Cancel,
+            0, 0m, "CANCEL", cancellationToken).ConfigureAwait(false);
+
+        if (result.Success && link is not null)
+        {
+            await _links.RemoveAsync(orderId, cancellationToken).ConfigureAwait(false);
+        }
+
+        return result;
+    }
 
     /// <inheritdoc />
     public Task<OrderResult> ModifyOrderAsync(

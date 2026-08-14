@@ -153,6 +153,28 @@
                                 FontSize="11"
                                 Foreground="{StaticResource AppWarningBrush}"
                                 Text="{Binding DataSourceLabel}" />
+
+                            <!--
+                                After a reboot OpenD is usually not running, and without it
+                                this application can do nothing at all. The button only appears
+                                while disconnected on the live provider - never on synthetic
+                                data, where there is no gateway to start.
+                            -->
+                            <ui:Button
+                                Margin="0,8,0,0"
+                                Padding="8,4"
+                                HorizontalAlignment="Stretch"
+                                Command="{Binding LaunchGatewayCommand}"
+                                Content="Start OpenD"
+                                FontSize="11"
+                                Visibility="{Binding CanLaunchGateway, Converter={StaticResource BoolToVisibility}}" />
+
+                            <TextBlock
+                                Margin="0,6,0,0"
+                                FontSize="10"
+                                Foreground="{StaticResource AppTextTertiaryBrush}"
+                                Text="{Binding GatewayMessage}"
+                                TextWrapping="Wrap" />
                         </StackPanel>
                     </Border>
                 </Grid>

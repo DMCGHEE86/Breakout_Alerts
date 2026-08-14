@@ -1100,6 +1100,63 @@ generalisation is probably bands and lines, but whether a ZEBRA zone is a band o
 depends on its unanswered zone-width definition. Generalising now would mean guessing, then
 refactoring twice - which is what waiting for a second real case is supposed to prevent.
 
+## 4s. STOP-LOSS PAIRING — measured, 2026-08-13
+
+### 4s.1 What the broker actually does
+
+Established by placing a real bracket in moomoo and watching it, not by reading the protocol:
+
+1. **Both legs rest at the broker at once.** The Orders list showed a queued Buy and a queued
+   Sell stop for the same contract, entry unfilled (`1/0` on both). A stop-sell is accepted
+   **before** the position exists.
+2. **The stop leg can be cancelled alone** - the entry survives.
+3. **Cancelling the entry cascades** - both disappear. moomoo enforces a parent/child link.
+4. **Both legs can be edited together**, as when first placed.
+5. An orphaned stop with no position **would open a short** if funds or margin allow;
+   otherwise it rejects at execution time.
+
+### 4s.2 The assumption that was wrong
+
+The first implementation assumed a stop-sell would be **rejected before a position existed**,
+and therefore had to be held locally and submitted on fill. That assumption came from the
+absence of a bracket field in the protocol - an inference, not a measurement. Fact 1 disproves
+it.
+
+Recorded because the failure mode is instructive: an absent API field was read as an absent
+capability. The capability was there under a different shape - two independent orders.
+
+### 4s.3 What the API cannot do
+
+`TrdPlaceOrder` has no parent, child, attach or link field - searched for all of them. So two
+orders sent through OpenAPI are **genuinely independent**, and fact 3 does not apply to them.
+Cancelling an entry placed this way leaves the stop resting, which by fact 5 can open a short.
+
+**This is the one place this application is weaker than moomoo's own ticket**, and it must be
+stated rather than glossed.
+
+### 4s.4 Design
+
+* **Send both orders at submission.** Protection rests at the broker and survives the app being
+  closed, crashed or restarted - which the fill-triggered design could never offer.
+* **Persist the pairing** as an order link. Same file and persistence as the previous pending
+  stop; different job. It exists so a restart still knows the two orders belong together.
+* **Cancelling an entry cancels its stop FIRST, then the entry.** If the process dies
+  mid-sequence that leaves an unprotected entry - visible and recoverable - rather than a naked
+  stop able to act on its own. That ordering is the whole point.
+* **Reconcile on startup.** A resting stop whose entry is gone, with no position, is an orphan:
+  surface it loudly and offer to cancel.
+
+### 4s.5 Trade-off, stated plainly
+
+| | Fill-triggered (first attempt) | Both-at-once (this design) |
+|---|---|---|
+| Stop survives app closed | No | **Yes** |
+| Protection depends on app running | Yes | No |
+| Orphan risk | None | Managed, and visible in moomoo if missed |
+
+Better on the property that matters. The new risk is recoverable and inspectable; the old one
+was a position silently unprotected.
+
 ## 5. Safety posture
 
 Building to the spec's stated guardrails, which are sound:

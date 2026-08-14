@@ -3,6 +3,7 @@ using System.Windows;
 using BreakoutAlerts.Core.Abstractions;
 using BreakoutAlerts.Core.Configuration;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 
 namespace BreakoutAlerts.App.ViewModels;
 
@@ -13,6 +14,7 @@ namespace BreakoutAlerts.App.ViewModels;
 public sealed partial class ShellViewModel : ObservableObject
 {
     private readonly IMarketDataProvider _marketData;
+    private readonly Services.OpenDLauncher? _launcher;
 
     /// <summary>Items shown in the left navigation rail.</summary>
     public ObservableCollection<NavigationItem> NavigationItems { get; }
@@ -57,12 +59,14 @@ public sealed partial class ShellViewModel : ObservableObject
     public ShellViewModel(
         IMarketDataProvider marketData,
         MarketDataOptions marketDataOptions,
+        Services.OpenDLauncher? launcher,
         DashboardViewModel dashboard,
         ScannerViewModel scanner,
         TradingViewModel trading,
         StrategiesViewModel strategies)
     {
         _marketData = marketData ?? throw new ArgumentNullException(nameof(marketData));
+        _launcher = launcher;
 
         NavigationItems =
         [
@@ -136,6 +140,38 @@ public sealed partial class ShellViewModel : ObservableObject
     {
         IsConnected = connected;
         ConnectionStatus = connected ? "Connected" : "Disconnected";
+        OnPropertyChanged(nameof(CanLaunchGateway));
+    }
+
+    /// <summary>Message from the last launch attempt, or null.</summary>
+    [ObservableProperty]
+    private string? _gatewayMessage;
+
+    /// <summary>
+    /// True when offering to start OpenD makes sense.
+    /// </summary>
+    /// <remarks>
+    /// Hidden while connected and while running on generated data - in the synthetic case
+    /// there is no gateway involved and the button would be nonsense.
+    /// </remarks>
+    public bool CanLaunchGateway => !IsConnected && !IsSyntheticData && _launcher is not null;
+
+    /// <summary>
+    /// Starts OpenD.
+    /// </summary>
+    /// <remarks>
+    /// Bound to a button, never called automatically. After a reboot the gateway is usually
+    /// not running and this application can do nothing without it - but launching another
+    /// program, which then asks for a login, is a visible side effect and belongs to an
+    /// explicit click rather than to a reconnect loop firing while the user is elsewhere.
+    ///
+    /// <para>The connection is not forced here either. The provider's own reconnect notices
+    /// the gateway once it is up and logged in, which can take several seconds.</para>
+    /// </remarks>
+    [RelayCommand]
+    private void LaunchGateway()
+    {
+        GatewayMessage = _launcher?.Launch();
     }
 }
 

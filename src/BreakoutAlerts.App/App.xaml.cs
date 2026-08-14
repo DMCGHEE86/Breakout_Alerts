@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Windows;
 using System.Windows.Threading;
 using BreakoutAlerts.App.Services;
@@ -220,6 +220,10 @@ public partial class App : Application
         }
         else
         {
+            // Only on the live path. There is no gateway to start when running on generated
+            // data, and offering the button there would be nonsense.
+            services.AddSingleton<OpenDLauncher>();
+
             services.AddSingleton<MoomooConnection>();
             services.AddSingleton<MoomooMarketDataProvider>();
 
@@ -241,6 +245,11 @@ public partial class App : Application
         services.AddSingleton(sp => new OrderAuditLog(
             Path.Combine(DataDirectory, "orders.jsonl"),
             sp.GetRequiredService<ILogger<OrderAuditLog>>()));
+
+        // Pairings between an entry and its protective stop. The API cannot express the link, so it is tracked here.
+        services.AddSingleton(sp => new OrderLinkStore(
+            Path.Combine(DataDirectory, "order-links.json"),
+            sp.GetRequiredService<ILogger<OrderLinkStore>>()));
 
         services.AddSingleton<MoomooTradeConnection>();
         services.AddSingleton<ITradingService, MoomooTradingService>();
@@ -311,3 +320,4 @@ public partial class App : Application
         base.OnExit(e);
     }
 }
+

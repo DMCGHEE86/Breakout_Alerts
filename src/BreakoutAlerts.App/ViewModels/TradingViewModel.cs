@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Windows;
 using BreakoutAlerts.Core.Abstractions;
 using BreakoutAlerts.Core.Trading;
@@ -37,6 +37,7 @@ public sealed partial class TradingViewModel : PageViewModelBase
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsLiveAccount))]
     [NotifyPropertyChangedFor(nameof(AccountWarning))]
+    [NotifyPropertyChangedFor(nameof(NeedsUnlock))]
     private TradeAccount? _selectedAccount;
 
     /// <summary>True when the selected account trades real money.</summary>
@@ -109,6 +110,18 @@ public sealed partial class TradingViewModel : PageViewModelBase
     [ObservableProperty]
     private string? _ticketSourceAlert;
 
+    /// <summary>Whether a protective stop is attached to this entry.</summary>
+    /// <remarks>
+    /// Off by default and reset on every new ticket. A stop carried over from the last order
+    /// would attach a price chosen for a different contract.
+    /// </remarks>
+    [ObservableProperty]
+    private bool _ticketUseStopLoss;
+
+    /// <summary>Stop trigger price.</summary>
+    [ObservableProperty]
+    private decimal _ticketStopPrice;
+
     /// <summary>True while a ticket is on screen.</summary>
     [ObservableProperty]
     private bool _isTicketOpen;
@@ -160,6 +173,7 @@ public sealed partial class TradingViewModel : PageViewModelBase
             OnPropertyChanged(nameof(IsConnected));
             OnPropertyChanged(nameof(IsUnlocked));
             OnPropertyChanged(nameof(AccountWarning));
+            OnPropertyChanged(nameof(NeedsUnlock));
         });
 
         _trading.OrderUpdated += (_, order) => Dispatch(() => ApplyOrderUpdate(order));
@@ -220,6 +234,63 @@ public sealed partial class TradingViewModel : PageViewModelBase
         _ = RefreshOrdersAsync();
     }
 
+    /// <summary>
+    /// Unlocks trading for this session.
+    /// </summary>
+    /// <param name="tradePassword">
+    /// Taken as a parameter and never held. There is deliberately no bindable password
+    /// property on this ViewModel: a bound string would sit in memory for the lifetime of the
+    /// page, appear in any memory dump, and be one careless log statement away from disk. The
+    /// view reads it from the PasswordBox at the moment of the click, passes it here, and
+    /// clears the box.
+    /// </param>
+    public async Task<bool> UnlockAsync(string tradePassword)
+    {
+        if (string.IsNullOrWhiteSpace(tradePassword))
+        {
+            LastResult = "Enter your moomoo trade password.";
+            LastResultIsError = true;
+            return false;
+        }
+
+        IsBusy = true;
+
+        try
+        {
+            var ok = await _trading.UnlockAsync(tradePassword);
+
+            LastResult = ok
+                ? "Trading unlocked for this session."
+                : "Unlock refused. Check the trade password.";
+            LastResultIsError = !ok;
+
+            OnPropertyChanged(nameof(IsUnlocked));
+            OnPropertyChanged(nameof(AccountWarning));
+
+            return ok;
+        }
+        catch (Exception ex)
+        {
+            // The message is logged; the password never is. A wrong password is ordinary user
+            // error, not an application fault.
+            _logger.LogError(ex, "Trade unlock failed");
+            LastResult = ex.Message;
+            LastResultIsError = true;
+            return false;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    /// <summary>True when the unlock panel should be shown.</summary>
+    /// <remarks>
+    /// Only for a live account that is still locked. Paper accounts do not need the password,
+    /// which is what lets the whole flow be rehearsed without ever typing it.
+    /// </remarks>
+    public bool NeedsUnlock => IsLiveAccount && !IsUnlocked;
+
     /// <summary>Opens a ticket for a contract, defaulting the limit to the mid.</summary>
     public void OpenTicket(string contractCode, string underlying, decimal? bid, decimal? ask, string? sourceAlert)
     {
@@ -237,6 +308,12 @@ public sealed partial class TradingViewModel : PageViewModelBase
         TicketLimitPrice = bid is { } b && ask is { } a
             ? decimal.Round((b + a) / 2m, 2)
             : bid ?? ask ?? 0m;
+
+        // Stop off by default, with a suggested price 20% below the entry so the box is not
+        // zero if it gets ticked. A starting point, not a recommendation - the trader sets it.
+        // Must come after the limit is worked out, or it would use the previous ticket's.
+        TicketUseStopLoss = false;
+        TicketStopPrice = TicketLimitPrice > 0 ? decimal.Round(TicketLimitPrice * 0.80m, 2) : 0m;
 
         IsConfirming = false;
         LastResult = null;
@@ -276,15 +353,23 @@ public sealed partial class TradingViewModel : PageViewModelBase
             : $"limit {request.LimitPrice:N2}";
 
         var estimate = request.Pricing == OrderPricing.Limit
-            ? $"  ≈ {(request.LimitPrice ?? 0m) * request.Quantity * 100m:N2} USD"
+            ? $"  â‰ˆ {(request.LimitPrice ?? 0m) * request.Quantity * 100m:N2} USD"
             : string.Empty;
 
         // Every field restated as it will be transmitted, including the environment. The
         // point is that the confirmation can be checked against the inputs rather than
         // requiring the user to trust that the ticket built what it displayed.
+        // The stop is spelled out including WHEN it is sent. It is not part of the entry
+        // request - the broker has no bracket order - so a summary implying both go out
+        // together would misdescribe what is about to happen.
+        var stopLine = request.StopLossPrice is { } sl
+            ? $"\nStop {sl:N2} GTC â€” placed at the broker with the entry"
+            : "\nNo stop attached";
+
         ConfirmationSummary =
-            $"{(request.Account.Environment == TradeEnvironment.Live ? "LIVE MONEY" : "PAPER")} · account {request.Account.AccountId}\n" +
-            $"{request.Side.ToString().ToUpperInvariant()} {request.Quantity} × {request.ContractCode} {price}{estimate}";
+            $"{(request.Account.Environment == TradeEnvironment.Live ? "LIVE MONEY" : "PAPER")} Â· account {request.Account.AccountId}\n" +
+            $"{request.Side.ToString().ToUpperInvariant()} {request.Quantity} Ã— {request.ContractCode} {price}{estimate}" +
+            stopLine;
 
         LastResult = null;
         LastResultIsError = false;
@@ -349,7 +434,8 @@ public sealed partial class TradingViewModel : PageViewModelBase
             Pricing = TicketPricing,
             LimitPrice = TicketPricing == OrderPricing.Limit ? TicketLimitPrice : null,
             Underlying = TicketUnderlying,
-            SourceAlertIdentity = TicketSourceAlert
+            SourceAlertIdentity = TicketSourceAlert,
+            StopLossPrice = TicketUseStopLoss ? TicketStopPrice : null
         };
     }
 
@@ -527,3 +613,4 @@ public sealed partial class OrderRowViewModel : ObservableObject
         Message = order.Message;
     }
 }
+

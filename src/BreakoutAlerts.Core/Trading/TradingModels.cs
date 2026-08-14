@@ -116,6 +116,16 @@ public sealed record OrderRequest
     /// <summary>Alert this order was raised from, if any. Audit only.</summary>
     public string? SourceAlertIdentity { get; init; }
 
+    /// <summary>
+    /// Protective stop price, or null for no stop.
+    /// </summary>
+    /// <remarks>
+    /// Not sent with the entry - the broker API has no bracket order, and a stop to sell would
+    /// be rejected before a position exists. It is recorded as a <see cref="PendingStop"/> and
+    /// submitted once the entry fills. See that type for why it is persisted.
+    /// </remarks>
+    public decimal? StopLossPrice { get; init; }
+
     /// <summary>Whether the request is internally consistent.</summary>
     /// <remarks>
     /// Checked before anything is sent. A limit order with no price would be rejected by the
@@ -142,6 +152,24 @@ public sealed record OrderRequest
         if (!Account.IsUsable)
         {
             return $"Account {Account.AccountId} is not reported as usable by the broker.";
+        }
+
+        if (StopLossPrice is { } stop)
+        {
+            if (stop <= 0)
+            {
+                return "A stop price must be above zero.";
+            }
+
+            // A buy protected by a stop ABOVE the entry would trigger immediately on any
+            // downtick past it - or rather, would never protect anything, because the stop
+            // sits on the wrong side of the position. Caught here because the broker would
+            // accept it and the mistake would only show up as a surprise exit.
+            if (Side == OrderSide.Buy && Pricing == OrderPricing.Limit
+                && LimitPrice is { } limit && stop >= limit)
+            {
+                return $"Stop {stop:N2} must be below the entry limit {limit:N2}.";
+            }
         }
 
         return null;

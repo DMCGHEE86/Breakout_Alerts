@@ -67,6 +67,16 @@ public sealed class MarketDataOptions
     public TimeOnly? ParsedAlertCutoff =>
         TimeOnly.TryParse(AlertCutoffTime, out var parsed) ? parsed : null;
 
+    /// <summary>
+    /// Full path to the OpenD executable. Empty uses the standard per-user install.
+    /// </summary>
+    /// <remarks>
+    /// OpenD installs under <c>%APPDATA%</c> rather than Program Files, so the default has to
+    /// be built from the current user's profile and cannot be a fixed string. Overridable
+    /// because a portable or relocated install is entirely possible.
+    /// </remarks>
+    public string OpenDPath { get; set; } = string.Empty;
+
     /// <summary>Seconds between watchlist quote refreshes.</summary>
     /// <remarks>
     /// Separate from <see cref="ScanIntervalSeconds"/> because the two answer different

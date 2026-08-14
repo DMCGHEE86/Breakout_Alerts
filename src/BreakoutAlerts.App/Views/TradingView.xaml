@@ -103,6 +103,51 @@
                     </StackPanel>
                 </Grid>
 
+                <!--
+                    Unlock, shown only for a live account that is still locked. Paper accounts
+                    never need it, which is what lets the whole flow be rehearsed without the
+                    password ever being typed.
+
+                    A PasswordBox, not a TextBox: it masks input, keeps the value out of the
+                    visual tree as plain text, and is never bound. The code-behind reads it at
+                    the moment of the click, hands it to the ViewModel, and clears it - so the
+                    password is never held anywhere for longer than the call takes.
+                -->
+                <Border
+                    Margin="0,10,0,0"
+                    Padding="12,10"
+                    Background="{StaticResource AppSurfaceElevatedBrush}"
+                    BorderBrush="{StaticResource AppWarningBrush}"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Visibility="{Binding NeedsUnlock, Converter={StaticResource BoolToVisibility}}">
+                    <StackPanel>
+                        <TextBlock
+                            FontSize="11"
+                            FontWeight="SemiBold"
+                            Foreground="{StaticResource AppWarningBrush}"
+                            Text="TRADING LOCKED"
+                            TextWrapping="Wrap" />
+                        <TextBlock
+                            Margin="0,4,0,0"
+                            FontSize="11"
+                            Foreground="{StaticResource AppTextSecondaryBrush}"
+                            Text="Live orders need your moomoo trade password. It is used once and never stored."
+                            TextWrapping="Wrap" />
+
+                        <PasswordBox
+                            x:Name="TradePasswordBox"
+                            Margin="0,8,0,0"
+                            KeyDown="TradePassword_KeyDown" />
+
+                        <ui:Button
+                            Margin="0,8,0,0"
+                            HorizontalAlignment="Stretch"
+                            Click="Unlock_Click"
+                            Content="Unlock trading" />
+                    </StackPanel>
+                </Border>
+
                 <Separator Margin="0,14" Background="{StaticResource AppBorderBrush}" />
 
                 <!--  ============ TICKET ============  -->
@@ -170,6 +215,36 @@
                         Content="Send at market instead of limit"
                         Foreground="{StaticResource AppTextSecondaryBrush}"
                         IsChecked="{Binding IsMarketOrder, Mode=TwoWay}" />
+
+                    <!--
+                        The broker has no bracket order, so this stop is NOT sent with the
+                        entry. It is recorded, persisted to disk, and submitted once the entry
+                        fills - which is what moomoo's own ticket must also be doing, since the
+                        protocol has no field for it. The wording below says so, because a
+                        trader who thinks the stop is already resting at the broker would be
+                        wrong about what protects them.
+                    -->
+                    <CheckBox
+                        Margin="0,12,0,0"
+                        Content="Attach a stop loss"
+                        Foreground="{StaticResource AppTextSecondaryBrush}"
+                        IsChecked="{Binding TicketUseStopLoss, Mode=TwoWay}" />
+
+                    <StackPanel Visibility="{Binding TicketUseStopLoss, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock
+                            Margin="0,8,0,4"
+                            FontSize="11"
+                            Foreground="{StaticResource AppTextTertiaryBrush}"
+                            Text="Stop price (GTC)" />
+                        <ui:NumberBox SmallChange="0.01" Value="{Binding TicketStopPrice, Mode=TwoWay}" />
+
+                        <TextBlock
+                            Margin="0,6,0,0"
+                            FontSize="10"
+                            Foreground="{StaticResource AppWarningBrush}"
+                            Text="Placed at the broker immediately, alongside the entry. It rests there whether this app is running or not. Cancelling the entry here also cancels the stop."
+                            TextWrapping="Wrap" />
+                    </StackPanel>
 
                     <!--
                         Two steps, deliberately. Filling the ticket arms it; a separate
@@ -361,4 +436,5 @@
         </Border>
     </Grid>
 </UserControl>
+
 
