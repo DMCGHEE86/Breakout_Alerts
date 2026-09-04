@@ -7,6 +7,7 @@
     xmlns:views="clr-namespace:BreakoutAlerts.App.Views"
     xmlns:vm="clr-namespace:BreakoutAlerts.App.ViewModels"
     Title="BreakoutAlerts"
+    Icon="/app.ico"
     Width="1500"
     Height="940"
     MinWidth="1100"

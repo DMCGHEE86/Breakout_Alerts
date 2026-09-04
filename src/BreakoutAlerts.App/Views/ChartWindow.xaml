@@ -6,6 +6,7 @@
     xmlns:sp="clr-namespace:ScottPlot.WPF;assembly=ScottPlot.WPF"
     xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
     Title="Chart"
+    Icon="/app.ico"
     Width="1150"
     Height="720"
     MinWidth="700"

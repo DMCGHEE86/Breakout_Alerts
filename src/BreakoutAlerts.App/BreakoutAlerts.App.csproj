@@ -6,7 +6,20 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+
+    <!--
+      Sets the icon on the built .exe, which is what Explorer, the taskbar and
+      alt-tab show. The window's own icon is set separately in ShellWindow.xaml -
+      the two are different things and setting only this leaves the window with
+      WPF's default.
+    -->
+    <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Also embedded as a resource so the windows can reference it at runtime. -->
+    <Resource Include="app.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />

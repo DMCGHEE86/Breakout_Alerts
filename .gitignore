@@ -95,6 +95,15 @@ credentials.json
 .env.*
 
 # ---------------------------------------------------------------------------
+# Reference imagery
+# ---------------------------------------------------------------------------
+# Scratch folder for images gathered while designing - stock comps, screenshots,
+# things saved from a browser. Licensing varies and is often unclear, and this
+# repository is public, so nothing here is committed. Artwork that ships with the
+# application lives beside the code it belongs to instead, e.g. app.ico.
+images/
+
+# ---------------------------------------------------------------------------
 # OS noise
 # ---------------------------------------------------------------------------
 Thumbs.db
