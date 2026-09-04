@@ -257,17 +257,21 @@ public sealed partial class TradingViewModel : PageViewModelBase
 
         try
         {
-            var ok = await _trading.UnlockAsync(tradePassword);
+            var result = await _trading.UnlockAsync(tradePassword);
 
-            LastResult = ok
+            // The broker's own words on a refusal, not a guess at what went wrong. "Check the
+            // trade password" is actively misleading when the password was correct and
+            // something else was refused, and it sends the user round the same loop retyping
+            // a password that was right the first time.
+            LastResult = result.Success
                 ? "Trading unlocked for this session."
-                : "Unlock refused. Check the trade password.";
-            LastResultIsError = !ok;
+                : $"Unlock refused: {result.Message}";
+            LastResultIsError = !result.Success;
 
             OnPropertyChanged(nameof(IsUnlocked));
             OnPropertyChanged(nameof(AccountWarning));
 
-            return ok;
+            return result.Success;
         }
         catch (Exception ex)
         {

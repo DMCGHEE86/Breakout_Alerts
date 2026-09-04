@@ -51,7 +51,14 @@ public interface ITradingService
     /// <param name="tradePassword">
     /// The account's trade password. Used and discarded - implementations must not retain it.
     /// </param>
-    Task<bool> UnlockAsync(string tradePassword, CancellationToken cancellationToken = default);
+    /// <param name="cancellationToken">Cancels the attempt.</param>
+    /// <returns>
+    /// The broker's own answer, not a bare true/false. A refused unlock has several distinct
+    /// causes that the user has to tell apart - a wrong password, a password belonging to a
+    /// different brokerage entity, an account with no trade password set - and only the
+    /// broker's message distinguishes them.
+    /// </returns>
+    Task<UnlockResult> UnlockAsync(string tradePassword, CancellationToken cancellationToken = default);
 
     /// <summary>Submits an order. Only ever from a confirmed user action.</summary>
     Task<OrderResult> PlaceOrderAsync(OrderRequest request, CancellationToken cancellationToken = default);
@@ -69,6 +76,25 @@ public interface ITradingService
 
     /// <summary>Fetches the current day's orders for an account.</summary>
     Task<IReadOnlyList<TradeOrder>> GetOrdersAsync(TradeAccount account, CancellationToken cancellationToken = default);
+}
+
+/// <summary>Outcome of an unlock attempt.</summary>
+/// <param name="Success">Whether the broker accepted the password.</param>
+/// <param name="Message">
+/// The broker's reason for refusing, passed through unedited. Never contains the password.
+/// </param>
+/// <remarks>
+/// A separate type from <see cref="OrderResult"/> because there is no order id here and
+/// borrowing one that carries a permanently-null field would be a small lie in a place where
+/// the types are the documentation.
+/// </remarks>
+public sealed record UnlockResult(bool Success, string? Message)
+{
+    /// <summary>A successful unlock.</summary>
+    public static UnlockResult Ok() => new(true, null);
+
+    /// <summary>A refusal, carrying the broker's reason.</summary>
+    public static UnlockResult Fail(string message) => new(false, message);
 }
 
 /// <summary>Outcome of an order operation.</summary>

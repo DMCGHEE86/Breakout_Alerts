@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using BreakoutAlerts.Core.Abstractions;
 using BreakoutAlerts.Core.Configuration;
 using Futu.OpenApi;
 using Futu.OpenApi.Pb;
@@ -342,13 +343,31 @@ public sealed partial class MoomooTradeConnection : FTSPI_Trd, FTSPI_Conn, IDisp
     /// <summary>
     /// Unlocks trading for this session using the account's trade password.
     /// </summary>
+    /// <param name="tradePassword">
+    /// Hashed to MD5 before transmission, as the gateway requires, and never stored by this
+    /// application - taken as a parameter, used, and dropped. A caller that wants "remember
+    /// me" has to make that decision explicitly and visibly rather than inheriting it here.
+    /// </param>
+    /// <param name="securityFirm">
+    /// Which brokerage entity the password belongs to, from
+    /// <see cref="TrdCommon.SecurityFirm"/>.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the wait for the reply.</param>
     /// <remarks>
-    /// The password is hashed to MD5 before transmission, as the gateway requires, and is
-    /// never stored by this application - it is taken as a parameter, used, and dropped. A
-    /// caller that wants "remember me" has to make that decision explicitly and visibly
-    /// rather than inheriting it from here.
+    /// <b>The security firm is required and is not optional in practice.</b> The field is
+    /// declared optional in the protocol, so leaving it unset compiles, sends, and gets a
+    /// refusal that reads exactly like a wrong password. One OpenD gateway can serve several
+    /// brokerage entities - Futu Securities (HK), Moomoo Financial Inc (US), Futu SG and so on
+    /// - and each holds its own trade password, so an unlock with no firm names no password to
+    /// check against. A US moomoo account is <c>SecurityFirm_FutuInc</c>; the value used here
+    /// comes from the account list rather than being assumed, because it is the gateway's own
+    /// answer to which entity the account belongs to.
+    ///
+    /// <para><b>Do not retry across firms to find the right one.</b> Each attempt is a failed
+    /// password attempt at the broker, and enough of them lock the account.</para>
     /// </remarks>
-    public async Task<bool> UnlockAsync(string tradePassword, CancellationToken cancellationToken = default)
+    public async Task<UnlockResult> UnlockAsync(
+        string tradePassword, int securityFirm, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tradePassword);
 
@@ -359,7 +378,10 @@ public sealed partial class MoomooTradeConnection : FTSPI_Trd, FTSPI_Conn, IDisp
         var c2s = TrdUnlockTrade.C2S.CreateBuilder()
             .SetUnlock(true)
             .SetPwdMD5(md5)
+            .SetSecurityFirm(securityFirm)
             .Build();
+
+        _logger.LogInformation("Sending trade unlock for {Firm}", (TrdCommon.SecurityFirm)securityFirm);
 
         var rsp = await SendAsync<TrdUnlockTrade.Response>(
             () => _trd.UnlockTrade(TrdUnlockTrade.Request.CreateBuilder().SetC2S(c2s).Build()),
@@ -367,14 +389,23 @@ public sealed partial class MoomooTradeConnection : FTSPI_Trd, FTSPI_Conn, IDisp
 
         IsUnlocked = rsp.RetType == (int)Common.RetType.RetType_Succeed;
 
-        if (!IsUnlocked)
+        if (IsUnlocked)
         {
-            // The message is logged but not the password, obviously. A wrong password is a
-            // normal user error, not an application fault.
-            _logger.LogWarning("Trade unlock refused: {Msg}", rsp.RetMsg);
+            return UnlockResult.Ok();
         }
 
-        return IsUnlocked;
+        // The gateway's own words, logged and returned. A generic "check your password"
+        // hides the two failures that are not a wrong password at all - the wrong brokerage
+        // entity, and an account that has no trade password set - and sends the user off to
+        // retype something that was right the first time. The message is logged; the
+        // password never is.
+        _logger.LogWarning(
+            "Trade unlock refused for {Firm} (retType {RetType}): {Msg}",
+            (TrdCommon.SecurityFirm)securityFirm, rsp.RetType, rsp.RetMsg);
+
+        return UnlockResult.Fail(string.IsNullOrWhiteSpace(rsp.RetMsg)
+            ? $"Unlock refused by the gateway (code {rsp.RetType}) with no reason given."
+            : rsp.RetMsg);
     }
 
     /// <inheritdoc />

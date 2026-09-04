@@ -1157,6 +1157,58 @@ stated rather than glossed.
 Better on the property that matters. The new risk is recoverable and inspectable; the old one
 was a position silently unprotected.
 
+## 4t. Trade unlock refused every password (2026-09-03)
+
+**Symptom.** Typing the correct moomoo trade password into the unlock panel produced
+"Unlock refused. Check the trade password." every time.
+
+### 4t.1 Cause
+
+`Trd_UnlockTrade.C2S` has three fields: `unlock`, `pwdMD5` and `securityFirm`. The third was
+never set, so it defaulted to `SecurityFirm_Unknown` (0).
+
+One OpenD gateway can serve several brokerage entities - Futu Securities (HK), Moomoo
+Financial Inc (US), Futu SG, AU, CA, MY, JP - and **each holds its own trade password**. An
+unlock that does not name an entity names no password to check against, and the gateway
+refuses it with a message indistinguishable from a wrong password.
+
+`--probe-trade` was extended to print the field and answered it directly: every real account
+on this gateway reports `SecurityFirm_FutuInc (2)`. The paper accounts report 0, which is why
+the value is now taken from a **live** account.
+
+### 4t.2 The pattern, again
+
+This is the **third** time a moomoo field declared optional in the protocol has turned out to
+be load-bearing:
+
+| Field | Left unset | Consequence |
+|---|---|---|
+| `currency` on `GetFunds` | 2026-08-05 | Buying power off by a factor of eight, and nothing looked wrong |
+| `needGeneralSecAccount` on `GetAccList` | 2026-08-22 | Real cash and margin accounts invisible |
+| `securityFirm` on `UnlockTrade` | 2026-09-03 | Every unlock refused, as if the password were wrong |
+
+The lesson is now explicit: **on this API, "optional" means the wire format tolerates its
+absence, not that the gateway does.** Every optional field on a request this application sends
+should be positively decided, not left to default.
+
+### 4t.3 Second defect, found while fixing the first
+
+The UI discarded the gateway's reason and substituted "Check the trade password." The message
+was in the log; the person who needed it was looking at the screen. That is the failure that
+made a five-minute bug take a session - the correct diagnosis was being transmitted and thrown
+away one layer before it was displayed.
+
+`ITradingService.UnlockAsync` now returns `UnlockResult` (success plus the broker's own
+message) instead of `bool`, and the ViewModel shows it verbatim. A bare `bool` on an operation
+with several distinct failure causes was the design error underneath the symptom.
+
+### 4t.4 Not done, deliberately
+
+**No retrying across security firms.** Trying each of the seven until one succeeds would have
+"fixed" this without understanding it, and every attempt is a failed password attempt at the
+broker - enough of them lock the account. One attempt, against the firm the gateway itself
+reports.
+
 ## 5. Safety posture
 
 Building to the spec's stated guardrails, which are sound:

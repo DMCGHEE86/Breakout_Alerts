@@ -104,6 +104,15 @@ public static class TradeProbe
             line($"    {acc.AccID,-20} {env,-9} {(TrdCommon.TrdAccType)acc.AccType,-24} " +
                  $"status {(TrdCommon.TrdAccStatus)acc.AccStatus}");
             line($"        markets: {markets}");
+
+            // The brokerage entity, which the unlock request has to name. One gateway can
+            // serve several, each with its own trade password, so an unlock that does not say
+            // which one is being unlocked names no password to check and is refused in a way
+            // that reads exactly like a wrong password.
+            line($"        securityFirm: " +
+                 (acc.HasSecurityFirm
+                     ? $"{(TrdCommon.SecurityFirm)acc.SecurityFirm} ({acc.SecurityFirm})"
+                     : "NOT REPORTED"));
         }
 
         // The paper account is what makes a full rehearsal possible without risking money,
