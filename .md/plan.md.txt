@@ -995,7 +995,8 @@ Safety properties, all deliberate:
 * Paper preselected; switching accounts **clears any armed confirmation**, because that
   confirmation was for a different account.
 * Limit is the default at the mid; market is opt-in and resets on every new ticket.
-* The live-unlock check lives in the **service**, not just the UI.
+* ~~The live-unlock check lives in the **service**, not just the UI.~~ Removed 2026-09-11 -
+  the check consulted a local flag for state that lives in OpenD. See section 4t.5.
 * `orders.jsonl` records every submit, cancel and modify with account and environment,
   written **before** the request goes out.
 * Nothing places an order automatically - no timer, no hosted service, no alert subscription
@@ -1208,6 +1209,64 @@ with several distinct failure causes was the design error underneath the symptom
 "fixed" this without understanding it, and every attempt is a failed password attempt at the
 broker - enough of them lock the account. One attempt, against the firm the gateway itself
 reports.
+
+### 4t.5 The real answer: the GUI OpenD refuses API unlocks (2026-09-11)
+
+The securityFirm fix was correct and still did not unlock. The user reported it failing again,
+and the application log - which since 4t.3 records the gateway's own reason - had the whole
+history:
+
+| Date | Build | Gateway's reply |
+|---|---|---|
+| 08-31, 09-02 | before 4t | `Unlock Trading is missing required parameter securityFirm.` |
+| 09-04, 09-09 | after 4t | `Please use the Unlock button in the top-right corner of the OpenD page to unlock trading. The GUI version of OpenD has disabled the unlock interface.` |
+
+So the first fix got past the parameter check, and the second message is final: **the GUI
+build of OpenD does not accept unlocks through the API at all.** The user's own observation -
+that OpenD's window has an "Unlock Trading" button - was the answer.
+
+Two things follow:
+
+1. **Neither reply is about the password.** Both are refusals that come before one would be
+   checked - a missing parameter, then a disabled interface.
+2. **The app's own lock gate made live trading impossible.** `IsUnlocked` could only become
+   true through an API unlock the gateway had disabled, and both `PlaceOrderAsync` and
+   `ModifyAsync` (which carries cancels) refused live accounts while it was false. Unlocking
+   in OpenD would have unlocked the gateway and changed nothing in the app.
+
+And one fact that settles the design: **nothing in the API reports whether OpenD is unlocked.**
+Checked against the SDK assembly - no query, no field on `GetGlobalState`, and no
+`Notify.GtwEventType` for it. The application cannot know the state; it can only learn it
+from an order being refused.
+
+**Change.** The in-app unlock is removed entirely - password box, `UnlockAsync`, `UnlockResult`,
+`IsUnlocked`, and both service-side gates. A live account now shows a standing note saying
+where to unlock (top right of the OpenD window, 6-digit trade password). If OpenD is locked,
+the broker refuses the order and its message reaches the result line verbatim.
+
+**Safety is unchanged, and arguably better.** The gate that was removed never protected
+anything: the broker enforces the lock regardless. The application's real safeguards for live
+orders - paper preselected, two-step confirmation, confirmation cleared on account switch,
+audit log written before sending, stop cancelled before entry - are all untouched. And the
+application no longer handles the trade password in any form, which removes the most sensitive
+code path it had.
+
+**If command-line OpenD is ever used instead**, the API unlock path presumably works there
+(the message singles out the GUI build) - unverified. The removed code, with the securityFirm
+fix, is in commit `edd3285`.
+
+### 4t.6 What this episode teaches
+
+* **4t.3 paid for itself immediately.** The first run of the build that surfaced the gateway's
+  message produced the message that made the whole feature obsolete. Had the UI kept saying
+  "check the trade password", the next step would have been a third round of guessing.
+* **A guard is only as good as the state it reads.** The service-side unlock check was added on
+  the sound principle "check where the consequence is" - but it checked a local copy of state
+  owned by another process, which could not be kept in sync. A guard reading a stale copy is not
+  a weaker guard; it is a different bug, and here it blocked every legitimate live order.
+* **Read the log before theorising.** The answer to "why does unlock fail" had been sitting in
+  `logs/` since 2026-08-31. The first diagnosis (4t) came from reflecting over the SDK; the log
+  would have given the same answer in one grep.
 
 ## 5. Safety posture
 

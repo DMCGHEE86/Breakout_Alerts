@@ -130,9 +130,12 @@ against moomoo OpenD with real data and paper order routing proven end to end.
 
 5. **No `FileSystemWatcher` inbound path.** Designed out with (3); nothing has since needed it.
 
-6. **The trade password is never stored,** rather than being stored under DPAPI. It is taken
-   as a parameter, hashed, sent, and dropped. Not storing a brokerage credential is strictly
-   safer than storing it well.
+6. **The trade password is never handled at all,** rather than being stored under DPAPI.
+   Originally it was taken as a parameter, hashed, sent and dropped. Since 2026-09-11 even that
+   is gone: the GUI build of OpenD refuses API unlocks ("The GUI version of OpenD has disabled
+   the unlock interface"), so trading is unlocked in OpenD's own window and this application
+   has no password path. See plan.md section 4t.5. Not handling a brokerage credential is
+   strictly safer than handling it well.
 
 7. **Order routing is entry only.** Kill switches, daily loss limits and position management
    were raised and explicitly rejected 2026-08-06: this app saves clicks timing an entry, the

@@ -105,10 +105,9 @@ public static class TradeProbe
                  $"status {(TrdCommon.TrdAccStatus)acc.AccStatus}");
             line($"        markets: {markets}");
 
-            // The brokerage entity, which the unlock request has to name. One gateway can
-            // serve several, each with its own trade password, so an unlock that does not say
-            // which one is being unlocked names no password to check and is refused in a way
-            // that reads exactly like a wrong password.
+            // The brokerage entity. One gateway can serve several - HK, US, SG and so on - each
+            // with its own trade password. Printed because it is what diagnosed the unlock
+            // failure in plan.md section 4t, and it costs one line.
             line($"        securityFirm: " +
                  (acc.HasSecurityFirm
                      ? $"{(TrdCommon.SecurityFirm)acc.SecurityFirm} ({acc.SecurityFirm})"

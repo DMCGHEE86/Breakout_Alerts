@@ -62,4 +62,14 @@ public sealed partial class MoomooTradeConnection
     public void OnReply_PlaceComboOrder(FTAPI_Conn client, uint nSerialNo, TrdPlaceComboOrder.Response rsp)
     {
     }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Unused because the GUI build of OpenD refuses API unlocks outright - measured
+    /// 2026-09-04, "The GUI version of OpenD has disabled the unlock interface." Trading is
+    /// unlocked in OpenD's own window instead. See plan.md section 4t.
+    /// </remarks>
+    public void OnReply_UnlockTrade(FTAPI_Conn client, uint nSerialNo, TrdUnlockTrade.Response rsp)
+    {
+    }
 }

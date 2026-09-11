@@ -37,17 +37,21 @@ public sealed partial class TradingViewModel : PageViewModelBase
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsLiveAccount))]
     [NotifyPropertyChangedFor(nameof(AccountWarning))]
-    [NotifyPropertyChangedFor(nameof(NeedsUnlock))]
     private TradeAccount? _selectedAccount;
 
     /// <summary>True when the selected account trades real money.</summary>
+    /// <remarks>
+    /// Also drives the "unlock in OpenD" note. Live trading is unlocked in OpenD's own window,
+    /// not here - the GUI build of OpenD refuses API unlocks - and nothing in the API reports
+    /// whether it has been done, so the page can only say where to do it, never whether it is
+    /// done.
+    /// </remarks>
     public bool IsLiveAccount => SelectedAccount?.Environment == TradeEnvironment.Live;
 
     /// <summary>Why the selected account cannot be traded, or null.</summary>
     public string? AccountWarning =>
         SelectedAccount is null ? "No US trading account available."
         : !SelectedAccount.IsUsable ? $"Account {SelectedAccount.AccountId} is DISABLED at the broker and cannot accept orders."
-        : IsLiveAccount && !_trading.IsUnlocked ? "LIVE account. Unlock with your trade password before placing orders."
         : null;
 
     // ---- Ticket ------------------------------------------------------------
@@ -156,9 +160,6 @@ public sealed partial class TradingViewModel : PageViewModelBase
     /// <summary>Whether the trading channel is connected.</summary>
     public bool IsConnected => _trading.IsConnected;
 
-    /// <summary>Whether the session is unlocked for live orders.</summary>
-    public bool IsUnlocked => _trading.IsUnlocked;
-
     /// <summary>Creates the ViewModel.</summary>
     public TradingViewModel(ITradingService trading, ILogger<TradingViewModel> logger)
     {
@@ -168,13 +169,7 @@ public sealed partial class TradingViewModel : PageViewModelBase
         Title = "Trading";
         Subtitle = "Account, order ticket and open orders";
 
-        _trading.StateChanged += (_, _) => Dispatch(() =>
-        {
-            OnPropertyChanged(nameof(IsConnected));
-            OnPropertyChanged(nameof(IsUnlocked));
-            OnPropertyChanged(nameof(AccountWarning));
-            OnPropertyChanged(nameof(NeedsUnlock));
-        });
+        _trading.StateChanged += (_, _) => Dispatch(() => OnPropertyChanged(nameof(IsConnected)));
 
         _trading.OrderUpdated += (_, order) => Dispatch(() => ApplyOrderUpdate(order));
     }
@@ -233,67 +228,6 @@ public sealed partial class TradingViewModel : PageViewModelBase
 
         _ = RefreshOrdersAsync();
     }
-
-    /// <summary>
-    /// Unlocks trading for this session.
-    /// </summary>
-    /// <param name="tradePassword">
-    /// Taken as a parameter and never held. There is deliberately no bindable password
-    /// property on this ViewModel: a bound string would sit in memory for the lifetime of the
-    /// page, appear in any memory dump, and be one careless log statement away from disk. The
-    /// view reads it from the PasswordBox at the moment of the click, passes it here, and
-    /// clears the box.
-    /// </param>
-    public async Task<bool> UnlockAsync(string tradePassword)
-    {
-        if (string.IsNullOrWhiteSpace(tradePassword))
-        {
-            LastResult = "Enter your moomoo trade password.";
-            LastResultIsError = true;
-            return false;
-        }
-
-        IsBusy = true;
-
-        try
-        {
-            var result = await _trading.UnlockAsync(tradePassword);
-
-            // The broker's own words on a refusal, not a guess at what went wrong. "Check the
-            // trade password" is actively misleading when the password was correct and
-            // something else was refused, and it sends the user round the same loop retyping
-            // a password that was right the first time.
-            LastResult = result.Success
-                ? "Trading unlocked for this session."
-                : $"Unlock refused: {result.Message}";
-            LastResultIsError = !result.Success;
-
-            OnPropertyChanged(nameof(IsUnlocked));
-            OnPropertyChanged(nameof(AccountWarning));
-
-            return result.Success;
-        }
-        catch (Exception ex)
-        {
-            // The message is logged; the password never is. A wrong password is ordinary user
-            // error, not an application fault.
-            _logger.LogError(ex, "Trade unlock failed");
-            LastResult = ex.Message;
-            LastResultIsError = true;
-            return false;
-        }
-        finally
-        {
-            IsBusy = false;
-        }
-    }
-
-    /// <summary>True when the unlock panel should be shown.</summary>
-    /// <remarks>
-    /// Only for a live account that is still locked. Paper accounts do not need the password,
-    /// which is what lets the whole flow be rehearsed without ever typing it.
-    /// </remarks>
-    public bool NeedsUnlock => IsLiveAccount && !IsUnlocked;
 
     /// <summary>Opens a ticket for a contract, defaulting the limit to the mid.</summary>
     public void OpenTicket(string contractCode, string underlying, decimal? bid, decimal? ask, string? sourceAlert)

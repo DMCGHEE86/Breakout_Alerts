@@ -34,23 +34,8 @@ public sealed class MoomooTradingService : ITradingService
     private readonly OrderLinkStore _links;
     private readonly ILogger<MoomooTradingService> _logger;
 
-    /// <summary>
-    /// Which brokerage entity the live accounts belong to, learned from the account list.
-    /// </summary>
-    /// <remarks>
-    /// The unlock request has to name one - see <see cref="MoomooTradeConnection.UnlockAsync"/>.
-    /// It is read from the gateway's own account records rather than assumed, because the app
-    /// has no other way to know which entity holds the password. The seed value is the US
-    /// entity, which is what a moomoo US account is and the only kind this application lists,
-    /// so an unlock attempted before any account has been fetched still names the right one.
-    /// </remarks>
-    private int _securityFirm = (int)TrdCommon.SecurityFirm.SecurityFirm_FutuInc;
-
     /// <inheritdoc />
     public bool IsConnected => _connection.IsConnected;
-
-    /// <inheritdoc />
-    public bool IsUnlocked => _connection.IsUnlocked;
 
     /// <inheritdoc />
     public event EventHandler? StateChanged;
@@ -168,17 +153,6 @@ public sealed class MoomooTradingService : ITradingService
         _connection.ConnectAsync(cancellationToken);
 
     /// <inheritdoc />
-    public async Task<UnlockResult> UnlockAsync(string tradePassword, CancellationToken cancellationToken = default)
-    {
-        var result = await _connection
-            .UnlockAsync(tradePassword, _securityFirm, cancellationToken)
-            .ConfigureAwait(false);
-
-        StateChanged?.Invoke(this, EventArgs.Empty);
-        return result;
-    }
-
-    /// <inheritdoc />
     public async Task<IReadOnlyList<TradeAccount>> GetAccountsAsync(CancellationToken cancellationToken = default)
     {
         if (!IsConnected)
@@ -222,14 +196,6 @@ public sealed class MoomooTradingService : ITradingService
                 ? TradeEnvironment.Paper
                 : TradeEnvironment.Live;
 
-            // Remembered for the unlock, which must name the brokerage entity holding the
-            // trade password. Taken from a live account: a paper account can report a
-            // different entity, and unlocking is only ever about real money.
-            if (env == TradeEnvironment.Live && acc.HasSecurityFirm && acc.SecurityFirm != 0)
-            {
-                _securityFirm = acc.SecurityFirm;
-            }
-
             var (cash, power) = await FetchFundsAsync(acc, cancellationToken).ConfigureAwait(false);
 
             // Only an ACTIVE account can trade. A disabled one is left out of the picker
@@ -268,10 +234,6 @@ public sealed class MoomooTradingService : ITradingService
 
             results.Add(new TradeAccount(acc.AccID, env, label, cash, power, usable));
         }
-
-        _logger.LogInformation(
-            "{Count} tradable US accounts; unlock will target {Firm}",
-            results.Count, (TrdCommon.SecurityFirm)_securityFirm);
 
         // Register for order push now that the account ids are known. Without this the
         // gateway sends no updates at all and the tracker would show every order as
@@ -334,13 +296,12 @@ public sealed class MoomooTradingService : ITradingService
             return OrderResult.Fail("Not connected to the broker.");
         }
 
-        // Live orders need the session unlocked. Checked here as well as in the UI, because
-        // this is the last point before money moves and a UI-only gate is one refactor away
-        // from being bypassed.
-        if (request.Account.Environment == TradeEnvironment.Live && !IsUnlocked)
-        {
-            return OrderResult.Fail("Trading is locked. Unlock with your trade password before placing live orders.");
-        }
+        // No unlock check here, deliberately. Whether live trading is unlocked is state that
+        // lives in OpenD, and nothing in the API reports it - no query, no push event. A
+        // check here could only consult a local guess, and the guess that used to be here
+        // blocked every live order once unlocking moved into OpenD's own window. The broker
+        // enforces the lock itself and says so in the rejection, which is returned below
+        // verbatim. See plan.md section 4t.
 
         // Written BEFORE the request is sent - see OrderAuditLog. An order that goes out and
         // then loses the connection is exactly the case the record exists for.
@@ -479,11 +440,6 @@ public sealed class MoomooTradingService : ITradingService
         if (!IsConnected)
         {
             return OrderResult.Fail("Not connected to the broker.");
-        }
-
-        if (account.Environment == TradeEnvironment.Live && !IsUnlocked)
-        {
-            return OrderResult.Fail("Trading is locked. Unlock with your trade password first.");
         }
 
         await _audit.WriteAsync(new OrderAuditRecord

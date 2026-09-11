@@ -104,14 +104,15 @@
                 </Grid>
 
                 <!--
-                    Unlock, shown only for a live account that is still locked. Paper accounts
-                    never need it, which is what lets the whole flow be rehearsed without the
-                    password ever being typed.
+                    Where to unlock, shown for every live account. Not a password box: the GUI
+                    build of OpenD refuses API unlocks outright ("The GUI version of OpenD has
+                    disabled the unlock interface"), so the trade password is entered in
+                    OpenD's own window and this application never handles it.
 
-                    A PasswordBox, not a TextBox: it masks input, keeps the value out of the
-                    visual tree as plain text, and is never bound. The code-behind reads it at
-                    the moment of the click, hands it to the ViewModel, and clears it - so the
-                    password is never held anywhere for longer than the call takes.
+                    Shown unconditionally rather than "while locked" because nothing in the API
+                    reports whether OpenD is unlocked. The page can say where to do it; it
+                    cannot know whether it has been done. If it has not, the broker refuses the
+                    order and its message appears in the result line below.
                 -->
                 <Border
                     Margin="0,10,0,0"
@@ -120,31 +121,20 @@
                     BorderBrush="{StaticResource AppWarningBrush}"
                     BorderThickness="1"
                     CornerRadius="6"
-                    Visibility="{Binding NeedsUnlock, Converter={StaticResource BoolToVisibility}}">
+                    Visibility="{Binding IsLiveAccount, Converter={StaticResource BoolToVisibility}}">
                     <StackPanel>
                         <TextBlock
                             FontSize="11"
                             FontWeight="SemiBold"
                             Foreground="{StaticResource AppWarningBrush}"
-                            Text="TRADING LOCKED"
+                            Text="UNLOCK TRADING IN OpenD"
                             TextWrapping="Wrap" />
                         <TextBlock
                             Margin="0,4,0,0"
                             FontSize="11"
                             Foreground="{StaticResource AppTextSecondaryBrush}"
-                            Text="Live orders need your moomoo trade password. It is used once and never stored."
+                            Text="Click Unlock Trading at the top right of the OpenD window and enter your 6-digit trade password there. This app never asks for it."
                             TextWrapping="Wrap" />
-
-                        <PasswordBox
-                            x:Name="TradePasswordBox"
-                            Margin="0,8,0,0"
-                            KeyDown="TradePassword_KeyDown" />
-
-                        <ui:Button
-                            Margin="0,8,0,0"
-                            HorizontalAlignment="Stretch"
-                            Click="Unlock_Click"
-                            Content="Unlock trading" />
                     </StackPanel>
                 </Border>
 

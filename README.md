@@ -124,15 +124,19 @@ Other guards:
 - **Switching accounts clears an armed confirmation** — it was for a different account.
 - **Limit is the default**, priced at the mid. Market is opt-in and resets on every ticket,
   because option spreads are wide enough to fill well away from the quoted price.
-- **Live orders require the trade password**; paper orders do not, so the whole flow can be
-  rehearsed without ever typing it.
+- **Live trading is unlocked in OpenD, not here.** Click **Unlock Trading** at the top right of
+  the OpenD window and enter your 6-digit trade password there. The GUI version of OpenD
+  refuses unlocks through the API, and nothing in the API reports whether OpenD is unlocked —
+  so if it isn't, the broker refuses the order and its message appears on the Trading page.
+  Paper orders need no unlock, so the whole flow can be rehearsed without it.
 - **Disabled and non-US accounts are not offered.** A gateway also exposes crypto and
   prediction-market accounts, and a picker that lets you send an options order to one is a trap.
 - **Cash and margin are labelled.** Long options are paid in full, so `Cash` is the number
   that constrains the order — `Power` is the margin figure and is shown separately.
 
-**Credentials are never stored.** The trade password is taken as a parameter, hashed, sent,
-and dropped. OpenD holds your account login, not this app.
+**This app handles no credentials at all.** OpenD holds your account login, and the trade
+password is entered in OpenD's own window. Nothing in this repository asks for, stores or
+transmits either.
 
 ---
 
