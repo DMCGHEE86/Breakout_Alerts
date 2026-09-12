@@ -183,8 +183,17 @@ public static class LiveDataProbe
             });
 
             line($"hours present            {string.Join(",", byHour.Select(g => g.Key))}");
+
+            // These legs deliberately set only ExtendedTime and no Session, because what they
+            // exist to measure is the ExtendedTime flag itself. So an empty overnight block
+            // here says nothing about whether the gateway HAS overnight data - it says this
+            // request did not ask for it. Reading that as an absence of data is exactly the
+            // mistake that kept ZEBRA blocked for a month; --probe-sessions is the tool that
+            // answers the capability question, and the answer is Session_ALL.
             line($"bars in 20:00-04:00      {overnight}" +
-                 (overnight > 0 ? "  <-- OVERNIGHT IS AVAILABLE" : "  <-- NO OVERNIGHT COVERAGE"));
+                 (overnight > 0
+                     ? "  <-- present even without Session"
+                     : "  <-- expected: these legs do not set Session. See --probe-sessions."));
         }
 
         await HistoryAsync(extended: false, endOffsetDays: 0).ConfigureAwait(false);

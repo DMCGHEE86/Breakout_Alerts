@@ -33,11 +33,25 @@ public sealed class ScannerEngineTests
         return (engine, notifications, data, registry);
     }
 
+    /// <summary>A fake strategy that always reports the given signals.</summary>
+    /// <remarks>
+    /// <b>Both Evaluate overloads are configured, and both are needed.</b> A substitute does
+    /// not inherit an interface's default implementation - it intercepts every member and
+    /// returns null for any that was not set up - so configuring only the two-argument
+    /// overload leaves the engine's actual call path returning null. Stubbing both keeps the
+    /// fake honest about which one the engine uses.
+    /// </remarks>
     private static IPriceStrategy StrategyReturning(params StrategySignal[] signals)
     {
         var strategy = Substitute.For<IPriceStrategy>();
         strategy.Id.Returns("ORB_Breakout");
+        strategy.AdditionalTimeframes.Returns([]);
         strategy.Evaluate(Arg.Any<string>(), Arg.Any<IReadOnlyList<Bar>>()).Returns(signals);
+        strategy.Evaluate(
+                Arg.Any<string>(),
+                Arg.Any<IReadOnlyList<Bar>>(),
+                Arg.Any<IReadOnlyDictionary<int, IReadOnlyList<Bar>>>())
+            .Returns(signals);
         return strategy;
     }
 
@@ -510,7 +524,16 @@ public sealed class ScannerSessionFilterTests
 
         var strategy = Substitute.For<IPriceStrategy>();
         strategy.Id.Returns("ORB_Breakout");
+        strategy.AdditionalTimeframes.Returns([]);
+
+        // Both overloads - a substitute does not inherit the interface's default
+        // implementation. See StrategyReturning in ScannerEngineTests.
         strategy.Evaluate(Arg.Any<string>(), Arg.Any<IReadOnlyList<Bar>>())
+            .Returns(new List<StrategySignal> { stale, fresh });
+        strategy.Evaluate(
+                Arg.Any<string>(),
+                Arg.Any<IReadOnlyList<Bar>>(),
+                Arg.Any<IReadOnlyDictionary<int, IReadOnlyList<Bar>>>())
             .Returns(new List<StrategySignal> { stale, fresh });
 
         var registry = Substitute.For<IStrategyRegistry>();

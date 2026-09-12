@@ -23,25 +23,40 @@ public static class MoomooMapping
             .Build();
 
     /// <summary>Maps a bar size in minutes onto moomoo's K-line type.</summary>
-    /// <returns>Null when the size does not divide the 15-minute opening range evenly.</returns>
+    /// <returns>Null when the gateway has no K-line type of that length.</returns>
+    /// <remarks>
+    /// <b>This maps what the gateway offers, and nothing more.</b> Whether a bar size is
+    /// appropriate for a given strategy is a separate question with a separate answer -
+    /// <see cref="MarketSession.IsSupportedTimeframe"/> is what refuses the sizes that would
+    /// straddle the 09:45 opening-range lock. Those two rules were briefly the same rule, and
+    /// the result was that 30-minute bars could not be fetched at all, for a reason that had
+    /// nothing to do with the strategy asking for them.
+    /// </remarks>
     public static QotCommon.KLType? ToKLType(int minutes) => minutes switch
     {
         1 => QotCommon.KLType.KLType_1Min,
         3 => QotCommon.KLType.KLType_3Min,
         5 => QotCommon.KLType.KLType_5Min,
         15 => QotCommon.KLType.KLType_15Min,
-        // 2, 4 and 10 would produce a bar straddling the 09:45 lock and silently widen the
-        // opening range. Refused rather than approximated.
+        30 => QotCommon.KLType.KLType_30Min,
+        60 => QotCommon.KLType.KLType_60Min,
         _ => null
     };
 
     /// <summary>Bar length in minutes for a K-line type.</summary>
+    /// <remarks>
+    /// Load-bearing: <see cref="ToBar"/> subtracts this to convert the gateway's close stamp
+    /// into the open time the domain expects. A wrong value here shifts every bar of that size
+    /// by the difference, silently.
+    /// </remarks>
     public static int MinutesOf(QotCommon.KLType type) => type switch
     {
         QotCommon.KLType.KLType_1Min => 1,
         QotCommon.KLType.KLType_3Min => 3,
         QotCommon.KLType.KLType_5Min => 5,
         QotCommon.KLType.KLType_15Min => 15,
+        QotCommon.KLType.KLType_30Min => 30,
+        QotCommon.KLType.KLType_60Min => 60,
         _ => 5
     };
 
@@ -52,6 +67,8 @@ public static class MoomooMapping
         QotCommon.KLType.KLType_3Min => QotCommon.SubType.SubType_KL_3Min,
         QotCommon.KLType.KLType_5Min => QotCommon.SubType.SubType_KL_5Min,
         QotCommon.KLType.KLType_15Min => QotCommon.SubType.SubType_KL_15Min,
+        QotCommon.KLType.KLType_30Min => QotCommon.SubType.SubType_KL_30Min,
+        QotCommon.KLType.KLType_60Min => QotCommon.SubType.SubType_KL_60Min,
         _ => QotCommon.SubType.SubType_KL_5Min
     };
 

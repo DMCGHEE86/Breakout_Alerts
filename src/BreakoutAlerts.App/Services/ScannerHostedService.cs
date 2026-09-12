@@ -64,14 +64,24 @@ public sealed class ScannerHostedService : BackgroundService
         // nothing to scan and quietly does nothing.
         await _watchlist.LoadAsync(stoppingToken).ConfigureAwait(false);
 
-        // Register the real strategy. Done here rather than in a ViewModel so the scanner
+        // Register the real strategies. Done here rather than in a ViewModel so the scanner
         // works whether or not the Strategies page has ever been opened.
-        var strategy = new OpeningRangeBreakoutStrategy();
-        strategy.Configure(new Dictionary<string, double>
+        var orb = new OpeningRangeBreakoutStrategy();
+        orb.Configure(new Dictionary<string, double>
         {
             [OpeningRangeBreakoutStrategy.ParamTimeframe] = _engine.TimeframeMinutes
         });
-        _registry.Register(strategy);
+        _registry.Register(orb);
+
+        // ZEBRA reads its zone and the overnight test from 30-minute bars, which the engine
+        // fetches because the strategy declares the timeframe. Its trigger runs on the
+        // scanner's own bars, so that parameter is shared with ORB.
+        var zebra = new ZebraStrategy();
+        zebra.Configure(new Dictionary<string, double>
+        {
+            [ZebraStrategy.ParamTimeframe] = _engine.TimeframeMinutes
+        });
+        _registry.Register(zebra);
 
         _logger.LogInformation("Scanner started over {Count} symbols", _watchlist.Items.Count);
 

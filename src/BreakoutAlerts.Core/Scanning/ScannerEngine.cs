@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using BreakoutAlerts.Core.Abstractions;
 using BreakoutAlerts.Core.Models;
 using Microsoft.Extensions.Logging;
@@ -34,6 +35,17 @@ public sealed class ScannerEngine
     /// consumed, so over-fetching costs bandwidth but never correctness.
     /// </remarks>
     private const int BarHistoryCount = 800;
+
+    /// <summary>
+    /// Bars requested per symbol for a strategy's additional timeframe.
+    /// </summary>
+    /// <remarks>
+    /// Smaller than <see cref="BarHistoryCount"/> because the timeframes strategies ask for
+    /// here are coarser: 400 thirty-minute bars is over a week of 24-hour sessions, where the
+    /// only consumer today needs two. Deliberately not the same constant - sizing a 30-minute
+    /// request as though it were a 5-minute one asks for two months of data every cycle.
+    /// </remarks>
+    private const int AdditionalBarCount = 400;
 
     /// <summary>Creates the engine.</summary>
     public ScannerEngine(
@@ -103,6 +115,15 @@ public sealed class ScannerEngine
         var suppressed = 0;
         var today = Strategies.MarketSession.SessionDate(DateTimeOffset.Now);
 
+        // The union of the extra bar sizes the active strategies asked for, so two strategies
+        // wanting the same size cost one request rather than two. Computed once per cycle
+        // rather than per symbol - the active set cannot change mid-cycle.
+        var extraTimeframes = strategies
+            .SelectMany(s => s.AdditionalTimeframes)
+            .Where(tf => tf > 0 && tf != TimeframeMinutes)
+            .Distinct()
+            .ToList();
+
         foreach (var entry in symbols)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -118,9 +139,12 @@ public sealed class ScannerEngine
                     continue;
                 }
 
+                var additionalBars = await FetchAdditionalAsync(
+                    entry.Ticker, extraTimeframes, cancellationToken).ConfigureAwait(false);
+
                 foreach (var strategy in strategies)
                 {
-                    var signals = strategy.Evaluate(entry.Ticker, bars);
+                    var signals = strategy.Evaluate(entry.Ticker, bars, additionalBars);
 
                     foreach (var signal in signals)
                     {
@@ -179,7 +203,57 @@ public sealed class ScannerEngine
 
     /// <summary>Time of day in exchange time.</summary>
     private static TimeOnly TimeOfDay(DateTimeOffset instant) =>
-        TimeOnly.FromDateTime(Strategies.MarketSession.ToExchangeTime(instant).DateTime);
+        Strategies.MarketSession.TimeOfDay(instant);
+
+    /// <summary>
+    /// Fetches the extra bar series the active strategies declared.
+    /// </summary>
+    /// <remarks>
+    /// A timeframe that fails or comes back empty is <b>left out of the dictionary</b> rather
+    /// than added as an empty list. A strategy reading this has to distinguish "the gateway
+    /// gave me nothing" from "there were no bars in the window", because for a strategy whose
+    /// levels come from another timeframe the first means it must not produce a signal at all.
+    /// An empty list would read as the second and quietly invent a missing level.
+    ///
+    /// <para>Failures are logged and swallowed per timeframe. One unavailable series should
+    /// cost the strategy that asked for it, not the whole symbol's scan.</para>
+    /// </remarks>
+    private async Task<IReadOnlyDictionary<int, IReadOnlyList<Bar>>> FetchAdditionalAsync(
+        string ticker, IReadOnlyList<int> timeframes, CancellationToken cancellationToken)
+    {
+        if (timeframes.Count == 0)
+        {
+            return ReadOnlyDictionary<int, IReadOnlyList<Bar>>.Empty;
+        }
+
+        var result = new Dictionary<int, IReadOnlyList<Bar>>();
+
+        foreach (var timeframe in timeframes)
+        {
+            try
+            {
+                var bars = await _marketData
+                    .GetBarsAsync(ticker, timeframe, AdditionalBarCount, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (bars.Count > 0)
+                {
+                    result[timeframe] = bars;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Could not fetch {Timeframe}m bars for {Ticker}", timeframe, ticker);
+            }
+        }
+
+        return result;
+    }
 
     /// <summary>Projects a strategy signal into the persisted alert shape.</summary>
     /// <param name="signal">The signal that fired.</param>

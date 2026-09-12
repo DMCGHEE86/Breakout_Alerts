@@ -53,56 +53,35 @@
                     Margin="16,3"
                     Fill="{StaticResource AppBorderBrush}" />
 
-                <TextBlock
-                    VerticalAlignment="Center"
-                    Style="{StaticResource SecondaryText}"
-                    Text="ORB" />
-                <TextBlock
-                    Margin="8,0,0,0"
-                    VerticalAlignment="Center"
-                    FontFamily="{StaticResource AppNumericFont}"
-                    FontSize="13"
-                    Foreground="{StaticResource AppAccentBrush}"
-                    Text="{Binding OrbLow, Converter={StaticResource NullableNumber}}" />
-                <TextBlock
-                    Margin="4,0"
-                    VerticalAlignment="Center"
-                    Foreground="{StaticResource AppTextTertiaryBrush}"
-                    Text="–" />
-                <TextBlock
-                    VerticalAlignment="Center"
-                    FontFamily="{StaticResource AppNumericFont}"
-                    FontSize="13"
-                    Foreground="{StaticResource AppAccentBrush}"
-                    Text="{Binding OrbHigh, Converter={StaticResource NullableNumber}}" />
-
-                <Rectangle
-                    Width="1"
-                    Margin="16,3"
-                    Fill="{StaticResource AppBorderBrush}" />
-
-                <TextBlock
-                    VerticalAlignment="Center"
-                    Style="{StaticResource SecondaryText}"
-                    Text="Premarket" />
-                <TextBlock
-                    Margin="8,0,0,0"
-                    VerticalAlignment="Center"
-                    FontFamily="{StaticResource AppNumericFont}"
-                    FontSize="13"
-                    Foreground="{StaticResource AppDownBrush}"
-                    Text="{Binding PremarketLow, Converter={StaticResource NullableNumber}}" />
-                <TextBlock
-                    Margin="4,0"
-                    VerticalAlignment="Center"
-                    Foreground="{StaticResource AppTextTertiaryBrush}"
-                    Text="–" />
-                <TextBlock
-                    VerticalAlignment="Center"
-                    FontFamily="{StaticResource AppNumericFont}"
-                    FontSize="13"
-                    Foreground="{StaticResource AppUpBrush}"
-                    Text="{Binding PremarketHigh, Converter={StaticResource NullableNumber}}" />
+                <!--
+                    The focus alert's own levels, named by the strategy that produced them.
+                    Previously four fixed fields labelled ORB and Premarket, which showed four
+                    blanks under the wrong headings for any strategy that does not have those.
+                -->
+                <ItemsControl VerticalAlignment="Center" ItemsSource="{Binding Levels}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <StackPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Margin="0,0,16,0" Orientation="Horizontal">
+                                <TextBlock
+                                    VerticalAlignment="Center"
+                                    Style="{StaticResource SecondaryText}"
+                                    Text="{Binding Label}" />
+                                <TextBlock
+                                    Margin="8,0,0,0"
+                                    VerticalAlignment="Center"
+                                    FontFamily="{StaticResource AppNumericFont}"
+                                    FontSize="13"
+                                    Foreground="{StaticResource AppAccentBrush}"
+                                    Text="{Binding Text}" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
 
                 <ui:ProgressRing
                     Width="16"

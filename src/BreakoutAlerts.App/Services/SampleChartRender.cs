@@ -36,7 +36,15 @@ public static class SampleChartRender
         Console.WriteLine($"Rendered sample chart: {path}");
         Console.WriteLine($"  bars   : {model.Bars.Count}");
         Console.WriteLine($"  alerts : {model.Alerts.Count}");
-        Console.WriteLine($"  ORB    : {model.OrbLow:N2} - {model.OrbHigh:N2}");
+        foreach (var band in model.Bands)
+        {
+            Console.WriteLine($"  {band.Label,-7}: {band.Lower:N2} - {band.Upper:N2}");
+        }
+
+        foreach (var line in model.Lines)
+        {
+            Console.WriteLine($"  {line.Label,-7}: {line.Value:N2}");
+        }
         return 0;
     }
 
@@ -146,10 +154,11 @@ public static class SampleChartRender
             "DEMO",
             bars,
             TimeframeMinutes: 5,
-            orbHigh,
-            orbLow,
-            pmHigh,
-            pmLow,
+            [new Core.Charting.ChartBand("ORB", orbHigh, orbLow)],
+            [
+                new Core.Charting.ChartLine("PM", pmHigh, Core.Charting.LevelTone.Positive),
+                new Core.Charting.ChartLine("PM", pmLow, Core.Charting.LevelTone.Negative)
+            ],
             alerts,
             // Focus the retest, so the emphasised-vs-plain flag styling is both visible.
             alerts[2]);

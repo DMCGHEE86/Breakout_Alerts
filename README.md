@@ -15,11 +15,12 @@ trade, and never places an order on its own. Every order takes two deliberate cl
 
 ## What it does
 
-**Scans** a watchlist on a timer. For each symbol it pulls 5-minute bars from your local
-moomoo OpenD gateway, locks the opening range from the exact 09:30–09:45 window, and watches
-for breakouts.
+**Scans** a watchlist on a timer, pulling bars from your local moomoo OpenD gateway.
 
-**Alerts** on three signals:
+**Alerts** on two strategies, which look for opposite things — one trades continuation through
+a level, the other trades failure at one.
+
+**ORB — Opening Range Breakout.** Locks the range from the exact 09:30–09:45 window:
 
 | Signal | Fires when |
 |---|---|
@@ -27,11 +28,24 @@ for breakouts.
 | `PATH-2` | After a counter-direction pullback retests the broken level, the next candle closes back beyond it — the continuation confirmation |
 | `PATH-3` | A candle closes beyond the **premarket** high or low, but only when that level sits *outside* the opening range and is therefore a genuine second barrier |
 
+**ZEBRA — yesterday's high and low.** The zone is the previous regular session's high and low,
+read on 30-minute bars. A side stays armed only if every 30-minute *body* stayed inside the zone
+between yesterday's close and this morning's open — the idea being that a level already tested
+overnight has no orders left resting on it:
+
+| Signal | Fires when |
+|---|---|
+| `TAP-HIGH` | Price reaches a surviving yesterday's-high and closes back inside the zone — a short, traded with puts |
+| `TAP-LOW` | Price reaches a surviving yesterday's-low and closes back inside the zone — a long, traded with calls |
+
+A side is also dropped if price closes beyond the level (it broke rather than held) or gaps
+past it at the open (there was no tap to wait for).
+
 **Ranks option contracts** for the alerted symbol — filtered to absolute delta 0.60–0.70 and
 ranked by proximity to 0.65, with the top pick badged.
 
-**Charts the setup** on double-click: one session, the opening range as a shaded band,
-premarket levels, a marker at 9:30, and a flag on the candle that fired each signal.
+**Charts the setup** on double-click: one session, the strategy's own levels drawn as bands and
+lines, a marker at 9:30, and a flag on the candle that fired each signal.
 
 **Routes the order** to moomoo — you pick the account, type the quantity, review, confirm.
 
@@ -230,8 +244,10 @@ subtly wrong number rather than a visible failure. Full detail in `.md/plan.md.t
 - **The bar cache only accumulates going forward.** It cannot recover history it never saw, so
   charts for alerts older than roughly three days will be empty until the cache fills.
 - **No backtesting yet.** The alert log is being built for it, but nothing reads it.
-- **One strategy.** Some plumbing is still opening-range shaped and will be generalised as a
-  second strategy lands.
+- **ZEBRA has not fired against live data yet.** It is built and tested, but no alert from it
+  has been seen on a real session.
+- **The bar cache predates 24-hour data.** Sessions cached before 2026-09-12 hold 04:00–20:00
+  only, so ZEBRA's overnight test cannot be replayed over them. New sessions cache all 24 hours.
 
 ---
 

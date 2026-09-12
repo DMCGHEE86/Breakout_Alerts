@@ -28,6 +28,7 @@ namespace BreakoutAlerts.App.ViewModels;
 public sealed partial class ChartViewModel : ObservableObject
 {
     private readonly IMarketDataProvider _marketData;
+    private readonly IStrategyRegistry _registry;
     private readonly ILogger<ChartViewModel> _logger;
 
     /// <summary>
@@ -106,40 +107,57 @@ public sealed partial class ChartViewModel : ObservableObject
     /// <summary>The alert that opened the window, highlighted among the rest.</summary>
     public AlertRecord? FocusAlert { get; private set; }
 
-    // Levels are looked up by name now that AlertRecord carries them generically. These four
-    // stay ORB-shaped because the renderer still is - it draws the first pair as a shaded
-    // band and the second as dashed lines, which is two visual treatments rather than four
-    // equivalent levels. Generalising that properly needs a second strategy to show whether
-    // its levels are bands or lines, so it is deliberately left until ZEBRA lands.
+    /// <summary>
+    /// The focus alert's levels, named and valued for the header readout.
+    /// </summary>
+    /// <remarks>
+    /// A list rather than named ORB and premarket properties. The window used to bind four
+    /// fixed fields, which meant a ZEBRA alert would have shown four blanks under headings
+    /// describing levels it does not have. What the levels are called is the strategy's
+    /// business, and it already says so.
+    /// </remarks>
+    public IReadOnlyList<LevelReadout> Levels { get; private set; } = [];
 
-    /// <summary>Locked opening range high, from the alert.</summary>
-    public decimal? OrbHigh => FocusAlert?.Level("orb_high");
-
-    /// <summary>Locked opening range low, from the alert.</summary>
-    public decimal? OrbLow => FocusAlert?.Level("orb_low");
-
-    /// <summary>Premarket high, from the alert.</summary>
-    public decimal? PremarketHigh => FocusAlert?.Level("premarket_high");
-
-    /// <summary>Premarket low, from the alert.</summary>
-    public decimal? PremarketLow => FocusAlert?.Level("premarket_low");
+    /// <summary>One labelled level for the chart header.</summary>
+    /// <param name="Label">e.g. "ORB" or "YDAY".</param>
+    /// <param name="Text">Formatted value, or a range for a band.</param>
+    public sealed record LevelReadout(string Label, string Text);
 
     /// <summary>Projects this snapshot into the shape the renderer draws from.</summary>
-    public Services.ChartRenderModel ToRenderModel() => new(
-        Ticker,
-        Bars,
-        TimeframeMinutes,
-        OrbHigh,
-        OrbLow,
-        PremarketHigh,
-        PremarketLow,
-        Alerts,
-        FocusAlert);
+    public Services.ChartRenderModel ToRenderModel()
+    {
+        var (bands, lines) = Core.Charting.ChartLevelResolver.Resolve(FocusAlert, _registry.All);
+
+        return new Services.ChartRenderModel(
+            Ticker,
+            Bars,
+            TimeframeMinutes,
+            bands,
+            lines,
+            Alerts,
+            FocusAlert);
+    }
+
+    /// <summary>Rebuilds the header readout from the current focus alert.</summary>
+    private void RefreshLevels()
+    {
+        var (bands, lines) = Core.Charting.ChartLevelResolver.Resolve(FocusAlert, _registry.All);
+
+        var readouts = new List<LevelReadout>();
+        readouts.AddRange(bands.Select(b => new LevelReadout(b.Label, $"{b.Lower:N2} – {b.Upper:N2}")));
+        readouts.AddRange(lines.Select(l => new LevelReadout(l.Label, $"{l.Value:N2}")));
+
+        Levels = readouts;
+    }
 
     /// <summary>Creates the ViewModel.</summary>
-    public ChartViewModel(IMarketDataProvider marketData, ILogger<ChartViewModel> logger)
+    public ChartViewModel(
+        IMarketDataProvider marketData,
+        IStrategyRegistry registry,
+        ILogger<ChartViewModel> logger)
     {
         _marketData = marketData ?? throw new ArgumentNullException(nameof(marketData));
+        _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -240,15 +258,13 @@ public sealed partial class ChartViewModel : ObservableObject
         {
             IsLoading = false;
 
-            // The level properties are computed getters over FocusAlert, which is a plain
-            // property with no change notification. The window's bindings evaluate once
-            // when the DataContext is set - before LoadAsync has run - so without this they
-            // stay on their null placeholders forever, showing an em dash while the chart
-            // beside them draws the very same levels correctly.
-            OnPropertyChanged(nameof(OrbHigh));
-            OnPropertyChanged(nameof(OrbLow));
-            OnPropertyChanged(nameof(PremarketHigh));
-            OnPropertyChanged(nameof(PremarketLow));
+            // Levels are derived from FocusAlert, which is a plain property with no change
+            // notification. The window's bindings evaluate once when the DataContext is set -
+            // before LoadAsync has run - so without this they stay on their placeholders
+            // forever, showing nothing while the chart beside them draws the very same levels
+            // correctly.
+            RefreshLevels();
+            OnPropertyChanged(nameof(Levels));
         }
     }
 }

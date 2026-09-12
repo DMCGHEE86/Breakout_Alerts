@@ -48,14 +48,22 @@ public sealed class MoomooMarketDataProvider : IMarketDataProvider, IDisposable
 
     /// <summary>Calendar days of history requested per call.</summary>
     /// <remarks>
-    /// Kept small on purpose. Extended-hours 5-minute bars run 192 per session, and the
-    /// gateway truncates an over-long response from the newest end - so a wider window does
-    /// not fetch more history, it quietly drops today.
+    /// Five rather than three, because a strategy that needs the <i>previous</i> session needs
+    /// it on a Tuesday after a holiday Monday too - where three days back stops at Saturday and
+    /// the previous session is Friday. The response is paged, so this no longer trades against
+    /// the 1000-bar ceiling the way it used to.
     /// </remarks>
-    private const int HistoryLookbackDays = 3;
+    private const int HistoryLookbackDays = 5;
 
     /// <summary>Ceiling the gateway enforces on a single history response.</summary>
     private const int MaxHistoryBars = 1000;
+
+    /// <summary>Pages followed before giving up on a history request.</summary>
+    /// <remarks>
+    /// Five pages is 5000 bars - far more than any window this application asks for, so
+    /// reaching it means the gateway is repeating itself rather than that the data is large.
+    /// </remarks>
+    private const int MaxHistoryPages = 5;
 
     private readonly MoomooConnection _connection;
     private readonly MarketDataOptions _options;
@@ -158,39 +166,75 @@ public sealed class MoomooMarketDataProvider : IMarketDataProvider, IDisposable
     /// Measured against the live gateway on 2026-08-04 - an end of T+1 returned 40 premarket
     /// bars for today where an end of T returned none.
     ///
-    /// <para><b>The window is bounded by the 1000-bar cap, not by taste.</b> With extended
-    /// hours a 5-minute session is 192 bars, so a seven-day request overruns the cap - and
-    /// the gateway truncates from the <i>newest</i> end, silently discarding today's later
-    /// bars while still returning a plausible-looking thousand. Three days back keeps the
-    /// worst case near 770.</para>
+    /// <para><b>The 1000-bar cap is paged, not avoided.</b> The gateway caps one response and
+    /// truncates the overflow from the <i>newest</i> end - so an over-long request does not
+    /// return less history, it silently discards today's later bars while still handing back a
+    /// plausible-looking thousand. The window used to be kept deliberately short to stay under
+    /// that ceiling, which worked only for as long as nothing needed more data. Following
+    /// <c>NextReqKey</c> removes the ceiling instead of dodging it.</para>
+    ///
+    /// <para><b>Session_ALL, so the request covers the whole 24 hours.</b> With only
+    /// <c>ExtendedTime</c> set the response runs 04:00-20:00, and the missing 20:00-04:00
+    /// block was twice mistaken for an absence of data rather than an absence of asking - see
+    /// <c>--probe-sessions</c>, which reports what each session mode actually returns.</para>
     /// </remarks>
     private async Task<List<PriceBar>> FetchCompletedDaysAsync(
         string ticker, QotCommon.KLType klType, CancellationToken ct)
     {
-        var c2s = QotRequestHistoryKL.C2S.CreateBuilder()
-            .SetSecurity(MoomooMapping.UsSecurity(ticker))
-            .SetKlType((int)klType)
-            .SetRehabType((int)QotCommon.RehabType.RehabType_None)
-            .SetBeginTime(DateTime.Today.AddDays(-HistoryLookbackDays).ToString("yyyy-MM-dd"))
-            // Exclusive - see the remarks. T+1 is what includes today.
-            .SetEndTime(DateTime.Today.AddDays(1).ToString("yyyy-MM-dd"))
-            .SetMaxAckKLNum(MaxHistoryBars)
-            // Quirk 2. Without this the response contains regular-session bars only, there
-            // is no premarket high or low, and PATH-3 can never fire.
-            .SetExtendedTime(true)
-            .Build();
+        var bars = new List<PriceBar>();
+        Google.ProtocolBuffers.ByteString? nextKey = null;
 
-        var rsp = await _connection
-            .RequestHistoryAsync(QotRequestHistoryKL.Request.CreateBuilder().SetC2S(c2s).Build(), ct)
-            .ConfigureAwait(false);
-
-        if (rsp.RetType != (int)Common.RetType.RetType_Succeed)
+        // Bounded. A gateway that kept handing back a key would otherwise spin here forever,
+        // and an unbounded loop against a remote service is a hang waiting for a bad day.
+        for (var page = 0; page < MaxHistoryPages; page++)
         {
-            _logger.LogWarning("History request failed for {Ticker}: {Msg}", ticker, rsp.RetMsg);
-            return [];
+            var builder = QotRequestHistoryKL.C2S.CreateBuilder()
+                .SetSecurity(MoomooMapping.UsSecurity(ticker))
+                .SetKlType((int)klType)
+                .SetRehabType((int)QotCommon.RehabType.RehabType_None)
+                .SetBeginTime(DateTime.Today.AddDays(-HistoryLookbackDays).ToString("yyyy-MM-dd"))
+                // Exclusive - see the remarks. T+1 is what includes today.
+                .SetEndTime(DateTime.Today.AddDays(1).ToString("yyyy-MM-dd"))
+                .SetMaxAckKLNum(MaxHistoryBars)
+                // Quirk 2. Without this the response contains regular-session bars only, there
+                // is no premarket high or low, and PATH-3 can never fire. Subsumed by the
+                // session below on current gateways; set anyway, so the two never disagree.
+                .SetExtendedTime(true)
+                // Verified 2026-09-12: RTH gives 09:30-16:00, ETH gives 04:00-20:00, and ALL
+                // gives all 24 hours. OVERNIGHT is refused outright for history requests.
+                .SetSession((int)Common.Session.Session_ALL);
+
+            if (nextKey is not null)
+            {
+                builder.SetNextReqKey(nextKey);
+            }
+
+            var rsp = await _connection
+                .RequestHistoryAsync(
+                    QotRequestHistoryKL.Request.CreateBuilder().SetC2S(builder.Build()).Build(), ct)
+                .ConfigureAwait(false);
+
+            if (rsp.RetType != (int)Common.RetType.RetType_Succeed)
+            {
+                _logger.LogWarning("History request failed for {Ticker}: {Msg}", ticker, rsp.RetMsg);
+
+                // Partial pages are kept. Half a history is still better than none for a
+                // strategy that only needs the recent end of it, and returning [] here would
+                // turn a transient hiccup into a symbol that silently drops out of the scan.
+                break;
+            }
+
+            bars.AddRange(rsp.S2C.KlListList.Select(k => MoomooMapping.ToBar(k, klType)));
+
+            if (!rsp.S2C.HasNextReqKey || rsp.S2C.NextReqKey.Length == 0)
+            {
+                break;
+            }
+
+            nextKey = rsp.S2C.NextReqKey;
         }
 
-        return rsp.S2C.KlListList.Select(k => MoomooMapping.ToBar(k, klType)).ToList();
+        return bars;
     }
 
     /// <summary>

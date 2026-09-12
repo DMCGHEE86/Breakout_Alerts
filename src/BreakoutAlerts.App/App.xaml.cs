@@ -103,6 +103,15 @@ public partial class App : Application
             return;
         }
 
+        // Which hours the gateway will actually serve, per session mode. See SessionCoverageProbe.
+        var sessionIndex = Array.IndexOf(e.Args, "--probe-sessions");
+        if (sessionIndex >= 0 && sessionIndex + 2 < e.Args.Length)
+        {
+            await SessionCoverageProbe.RunAsync(e.Args[sessionIndex + 1], e.Args[sessionIndex + 2]);
+            Shutdown();
+            return;
+        }
+
         // Read-only trade inspection. Cannot place, modify or cancel anything - see TradeProbe.
         var tradeIndex = Array.IndexOf(e.Args, "--probe-trade");
         if (tradeIndex >= 0 && tradeIndex + 1 < e.Args.Length)

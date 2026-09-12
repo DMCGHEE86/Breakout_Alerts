@@ -1268,6 +1268,104 @@ fix, is in commit `edd3285`.
   `logs/` since 2026-08-31. The first diagnosis (4t) came from reflecting over the SDK; the log
   would have given the same answer in one grep.
 
+## 4u. ZEBRA, and the overnight data that was there all along (2026-09-12)
+
+Second strategy: **ZEBRA**, a port of "The KGU Tap and Trap". Mean reversion at the previous
+session's high and low, deliberately the opposite of ORB's continuation.
+
+### 4u.1 The correction that unblocked it
+
+ZEBRA had been blocked since 2026-08-06 on "no overnight bar data exists". That was wrong, and
+wrong twice - the second time with a rationalisation attached (section 4t's working assumption
+that 04:00-20:00 matched TradingView and was therefore enough).
+
+`Qot_RequestHistoryKL.C2S` carries **both** an `extendedTime` flag and a `session` field. This
+application set the first and never the second. Measured with the new `--probe-sessions`:
+
+| Session | Hours returned |
+|---|---|
+| unset + `extendedTime` | 04:00-20:00 |
+| `RTH` | 09:30-16:00 |
+| `ETH` | 04:00-20:00 |
+| **`ALL`** | **00:00-23:59, all 24 hours** |
+| `OVERNIGHT` | refused: "only supports RTH, ETH, or ALL" |
+
+Every cached session stopped at 20:00 because of the shape of our own request. **This is the
+fourth moomoo field that is optional in the protocol and load-bearing in practice** - after
+`currency`, `needGeneralSecAccount` and `securityFirm`. The rule from 4t.2 now has a matching
+tool: `--probe-sessions` answers "what would we get if we asked differently", which is the
+question inference kept getting wrong.
+
+The user chose the strict reading: fetch 24 hours and use all of it, so the overnight test
+covers the whole 16:00 -> 09:30 window rather than the part TradingView happens to draw.
+
+### 4u.2 Paging, because Session_ALL immediately hit the cap
+
+24-hour 5-minute data is 288 bars a day, so the existing window overran the 1000-bar ceiling -
+and the gateway truncates from the **newest** end. The probe caught it: a `Session_ALL` request
+returned data ending mid-morning of the previous day, silently dropping the most recent 150
+bars, which are the ones the scanner needs.
+
+The window used to be kept short to stay under that ceiling. It now follows `NextReqKey`
+instead, bounded at five pages, and `HistoryLookbackDays` rose 3 -> 5 so a Tuesday after a
+holiday Monday still reaches Friday.
+
+### 4u.3 Two timeframes, and why not aggregation
+
+ZEBRA reads its zone and the overnight bodies on **30-minute** bars and triggers on the
+scanner's 5-minute ones. The first draft aggregated 5m into 30m locally; that was deleted.
+A locally built bar disagrees with the broker's own chart whenever a source bar is missing,
+which is routine overnight, and a body that disagrees with the chart is the one input a level
+test must never be given. The provider already carries that principle for 1m -> 5m.
+
+So `IPriceStrategy` gained `AdditionalTimeframes` and a three-argument `Evaluate`, both
+default-implemented so ORB is untouched. The scanner fetches the union across active
+strategies, once per symbol per cycle. `ToKLType` also had to learn 30 and 60 - it previously
+refused them, enforcing ORB's opening-range constraint in the wire mapping, where it did not
+belong.
+
+A timeframe the gateway could not serve is **absent from the dictionary rather than empty**,
+so ZEBRA can tell "no data" from "no bars in range" and decline to invent a level.
+
+### 4u.4 The chart seam, finally closed
+
+`ChartRenderModel` took four named nullable decimals - an ORB band and a premarket pair - so
+ZEBRA's levels had nowhere to go. Deferred in 4r.2 until a second strategy showed whether its
+levels are bands or lines. The answer: **a band, the same shape as ORB's.**
+
+Now a strategy declares `LevelDisplays` (band or line, plus a tone for colour) naming its own
+context keys, and `ChartLevelResolver` turns an alert plus its strategy into bands and lines.
+The renderer knows what a band looks like and nothing about what ORB is. A third strategy needs
+no drawing change.
+
+The resolver lives in **Core**, not beside the renderer, because it is the part with decisions
+in it - ten tests cover the ways a chart can silently draw no levels, which has happened once
+already and is invisible in a PNG.
+
+The chart window's header follows: a list of the focus alert's own levels rather than four
+fixed fields that would have shown blanks under "ORB" and "Premarket" for every ZEBRA alert.
+
+### 4u.5 Decided here, not transcribed
+
+The source material does not cover two cases, and code cannot leave them open:
+
+* **A regular-session close beyond a level kills that side for the day.** The level broke
+  rather than held; a later move back through it is a different trade.
+* **A gap open beyond a level kills that side.** Price is already through - there is no tap.
+
+Also settled with the user: a "tap" is a **wick** touch with a close back inside (not the
+strict body reading, which would need a gap open); the zone is the previous **regular** session
+only; and there is no extra time window, so the existing 14:00 cutoff applies.
+
+### 4u.6 Still open
+
+* **The offline replay is not built, and cannot be useful yet.** Replaying ZEBRA over the 30
+  cached sessions would not test the overnight rule: those files are ETH-only, written before
+  the session change, so the 20:00-04:00 block is missing from exactly the window the rule
+  reads. The cache has to accumulate a few days of 24-hour data first.
+* No ZEBRA alert has been rendered or fired against live data yet.
+* ATR-width zones instead of exact levels - raised and deferred, see the plan file.
+
 ## 5. Safety posture
 
 Building to the spec's stated guardrails, which are sound:

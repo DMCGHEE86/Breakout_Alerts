@@ -70,6 +70,57 @@ public interface IPriceStrategy
     IReadOnlyList<StrategySignal> Evaluate(string ticker, IReadOnlyList<Bar> bars);
 
     /// <summary>
+    /// Bar sizes, in minutes, this strategy needs in addition to the scanner's own.
+    /// </summary>
+    /// <remarks>
+    /// Empty for a strategy that works entirely on the scanner's timeframe, which is why this
+    /// has a default implementation - existing strategies neither declare nor notice it.
+    ///
+    /// <para><b>Why this exists rather than aggregating locally.</b> A strategy could build
+    /// 30-minute bars from 5-minute ones, and the first draft of ZEBRA did. But a locally
+    /// aggregated bar can disagree with the broker's own chart whenever a source bar is
+    /// missing - which is routine in thin overnight hours - and a body that disagrees with the
+    /// chart is precisely the input a level test must never be given. The same reasoning is
+    /// already recorded on the moomoo provider for why 5-minute bars are requested rather than
+    /// built from 1-minute ones.</para>
+    ///
+    /// <para>The scanner fetches the union of these across active strategies, once per symbol
+    /// per cycle, so two strategies asking for the same size cost one request.</para>
+    /// </remarks>
+    IReadOnlyList<int> AdditionalTimeframes => [];
+
+    /// <summary>
+    /// How this strategy's levels should be drawn on the alert chart.
+    /// </summary>
+    /// <remarks>
+    /// The keys named here are the ones the strategy puts in
+    /// <see cref="StrategySignal.Context"/>. A strategy that declares nothing still produces
+    /// correct alerts; its chart simply shows candles and flags with no levels drawn, which
+    /// is the honest result of never having said what its numbers mean.
+    /// </remarks>
+    IReadOnlyList<Charting.LevelDisplay> LevelDisplays => [];
+
+    /// <summary>
+    /// Evaluates with the extra bar series this strategy declared.
+    /// </summary>
+    /// <param name="ticker">Symbol being evaluated.</param>
+    /// <param name="bars">Primary bars, at the scanner's timeframe. Same contract as above.</param>
+    /// <param name="additionalBars">
+    /// The series named by <see cref="AdditionalTimeframes"/>, keyed by size in minutes. A
+    /// timeframe the gateway could not serve is absent rather than empty, so a strategy can
+    /// tell "no data" from "no bars in range" - the two mean very different things when the
+    /// answer decides whether a level existed.
+    /// </param>
+    /// <remarks>
+    /// The default forwards to the single-series overload, so a strategy that declares no
+    /// additional timeframes needs no knowledge of this at all.
+    /// </remarks>
+    IReadOnlyList<StrategySignal> Evaluate(
+        string ticker,
+        IReadOnlyList<Bar> bars,
+        IReadOnlyDictionary<int, IReadOnlyList<Bar>> additionalBars) => Evaluate(ticker, bars);
+
+    /// <summary>
     /// Discards any accumulated per-ticker state, e.g. at a session boundary.
     /// </summary>
     /// <param name="ticker">Symbol to reset, or null to reset every symbol.</param>

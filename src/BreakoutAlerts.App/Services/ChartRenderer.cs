@@ -1,3 +1,4 @@
+using BreakoutAlerts.Core.Abstractions;
 using BreakoutAlerts.Core.Charting;
 using BreakoutAlerts.Core.Models;
 using BreakoutAlerts.Core.Strategies;
@@ -21,20 +22,23 @@ namespace BreakoutAlerts.App.Services;
 /// <param name="Ticker">Symbol being charted.</param>
 /// <param name="Bars">Session bars, ascending.</param>
 /// <param name="TimeframeMinutes">Bar size, used for candle width.</param>
-/// <param name="OrbHigh">Locked opening range high, if known.</param>
-/// <param name="OrbLow">Locked opening range low, if known.</param>
-/// <param name="PremarketHigh">Premarket high, if any.</param>
-/// <param name="PremarketLow">Premarket low, if any.</param>
+/// <param name="Bands">Shaded regions to draw, already resolved to prices.</param>
+/// <param name="Lines">Horizontal levels to draw, already resolved to prices.</param>
 /// <param name="Alerts">Every alert on this ticker, oldest first.</param>
 /// <param name="Focus">The alert that opened the window, drawn larger.</param>
+/// <remarks>
+/// Bands and lines rather than named levels. The earlier shape carried an opening-range pair
+/// and a premarket pair by name, which meant the renderer knew what ORB was - so a second
+/// strategy's levels had no way to reach the chart and its alerts drew over empty space. What
+/// to draw is now decided by the strategy, which is the only thing that knows what its own
+/// numbers mean; how a band looks is decided here.
+/// </remarks>
 public sealed record ChartRenderModel(
     string Ticker,
     IReadOnlyList<PriceBar> Bars,
     int TimeframeMinutes,
-    decimal? OrbHigh,
-    decimal? OrbLow,
-    decimal? PremarketHigh,
-    decimal? PremarketLow,
+    IReadOnlyList<ChartBand> Bands,
+    IReadOnlyList<ChartLine> Lines,
     IReadOnlyList<AlertRecord> Alerts,
     AlertRecord? Focus);
 
@@ -76,8 +80,8 @@ public static class ChartRenderer
         // Bands first so they sit behind the candles - painted on top they would wash out the
         // very bodies the window exists to judge distance from.
         DrawPremarketShading(plot, model);
-        DrawOpeningRange(plot, model);
-        DrawPremarketLevels(plot, model);
+        DrawBands(plot, model);
+        DrawLines(plot, model);
         DrawCandles(plot, model);
         DrawMarketOpen(plot, model);
         DrawAlertFlags(plot, model);
@@ -194,45 +198,45 @@ public static class ChartRenderer
         candles.FallingColor = PlotColor.FromHex(DownHex);
     }
 
-    private static void DrawOpeningRange(Plot plot, ChartRenderModel model)
+    private static void DrawBands(Plot plot, ChartRenderModel model)
     {
-        if (model.OrbHigh is not { } high || model.OrbLow is not { } low)
+        foreach (var item in model.Bands)
         {
-            return;
+            var band = plot.Add.Rectangle(
+                FirstBarX(model),
+                model.Bars[^1].Timestamp.LocalDateTime.ToOADate(),
+                (double)item.Lower,
+                (double)item.Upper);
+
+            band.FillColor = PlotColor.FromHex(OrbHex).WithAlpha(0.10);
+            band.LineColor = PlotColor.FromHex(OrbHex);
+            band.LineWidth = 1.5f;
+
+            AddLevelLabel(plot, model, (double)item.Upper, $"{item.Label} {item.Upper:N2}", OrbHex, above: true);
+            AddLevelLabel(plot, model, (double)item.Lower, $"{item.Label} {item.Lower:N2}", OrbHex, above: false);
         }
-
-        var band = plot.Add.Rectangle(
-            FirstBarX(model),
-            model.Bars[^1].Timestamp.LocalDateTime.ToOADate(),
-            (double)low,
-            (double)high);
-
-        band.FillColor = PlotColor.FromHex(OrbHex).WithAlpha(0.10);
-        band.LineColor = PlotColor.FromHex(OrbHex);
-        band.LineWidth = 1.5f;
-
-        AddLevelLabel(plot, model, (double)high, $"ORB {high:N2}", OrbHex, above: true);
-        AddLevelLabel(plot, model, (double)low, $"ORB {low:N2}", OrbHex, above: false);
     }
 
-    private static void DrawPremarketLevels(Plot plot, ChartRenderModel model)
+    private static void DrawLines(Plot plot, ChartRenderModel model)
     {
-        if (model.PremarketHigh is { } pmHigh)
+        foreach (var item in model.Lines)
         {
-            var line = plot.Add.HorizontalLine((double)pmHigh);
-            line.Color = PlotColor.FromHex(UpHex);
-            line.LineWidth = 1;
-            line.LinePattern = LinePattern.Dotted;
-            AddLevelLabel(plot, model, (double)pmHigh, $"PM {pmHigh:N2}", UpHex, above: true);
-        }
+            var hex = item.Tone switch
+            {
+                LevelTone.Positive => UpHex,
+                LevelTone.Negative => DownHex,
+                _ => OrbHex
+            };
 
-        if (model.PremarketLow is { } pmLow)
-        {
-            var line = plot.Add.HorizontalLine((double)pmLow);
-            line.Color = PlotColor.FromHex(DownHex);
+            var line = plot.Add.HorizontalLine((double)item.Value);
+            line.Color = PlotColor.FromHex(hex);
             line.LineWidth = 1;
             line.LinePattern = LinePattern.Dotted;
-            AddLevelLabel(plot, model, (double)pmLow, $"PM {pmLow:N2}", DownHex, above: false);
+
+            // Labelled above for an upside level and below for a downside one, so the text
+            // sits away from the price action rather than on top of it.
+            AddLevelLabel(plot, model, (double)item.Value, $"{item.Label} {item.Value:N2}", hex,
+                above: item.Tone != LevelTone.Negative);
         }
     }
 

@@ -35,6 +35,16 @@ public static class MarketSession
     /// <summary>Regular session closes at 16:00 ET.</summary>
     public static readonly TimeOnly RegularClose = new(16, 0);
 
+    /// <summary>After-hours trading ends at 20:00 ET.</summary>
+    /// <remarks>
+    /// The end of the data, not just the end of a window. The gateway serves extended-hours
+    /// bars from 04:00 to 20:00 and nothing at all between 20:00 and 04:00 - verified against
+    /// a cached session: 192 five-minute bars, hours 04 through 19, no gaps and no others.
+    /// A strategy that reasons about "overnight" is reasoning about a window with an eight-hour
+    /// hole in it, and must say so rather than treat silence as calm.
+    /// </remarks>
+    public static readonly TimeOnly AfterHoursClose = new(20, 0);
+
     /// <summary>Opening range length in minutes. Fixed at 15 by design, never configurable.</summary>
     public const int OpeningRangeMinutes = 15;
 
@@ -46,24 +56,41 @@ public static class MarketSession
     public static DateOnly SessionDate(DateTimeOffset instant) =>
         DateOnly.FromDateTime(ToExchangeTime(instant).DateTime);
 
+    /// <summary>The exchange-local time of day an instant falls on.</summary>
+    /// <remarks>
+    /// Exposed so callers can compare against the window constants directly instead of
+    /// building their own boundary instants. Constructing "yesterday at 16:00 ET" as a
+    /// <see cref="DateTimeOffset"/> means choosing a UTC offset for that date, which is wrong
+    /// twice a year - comparing times of day has no such trap.
+    /// </remarks>
+    public static TimeOnly TimeOfDay(DateTimeOffset instant) =>
+        TimeOnly.FromDateTime(ToExchangeTime(instant).DateTime);
+
     /// <summary>True when the instant falls in the 04:00-09:30 premarket window.</summary>
     public static bool IsPremarket(DateTimeOffset instant)
     {
-        var t = TimeOnly.FromDateTime(ToExchangeTime(instant).DateTime);
+        var t = TimeOfDay(instant);
         return t >= PremarketOpen && t < RegularOpen;
+    }
+
+    /// <summary>True when the instant falls in the 16:00-20:00 after-hours window.</summary>
+    public static bool IsAfterHours(DateTimeOffset instant)
+    {
+        var t = TimeOfDay(instant);
+        return t >= RegularClose && t < AfterHoursClose;
     }
 
     /// <summary>True when the instant falls in the 09:30-09:45 opening range window.</summary>
     public static bool IsOpeningRange(DateTimeOffset instant)
     {
-        var t = TimeOnly.FromDateTime(ToExchangeTime(instant).DateTime);
+        var t = TimeOfDay(instant);
         return t >= RegularOpen && t < OpeningRangeClose;
     }
 
     /// <summary>True when the instant falls in the 09:30-16:00 regular session.</summary>
     public static bool IsRegularSession(DateTimeOffset instant)
     {
-        var t = TimeOnly.FromDateTime(ToExchangeTime(instant).DateTime);
+        var t = TimeOfDay(instant);
         return t >= RegularOpen && t < RegularClose;
     }
 

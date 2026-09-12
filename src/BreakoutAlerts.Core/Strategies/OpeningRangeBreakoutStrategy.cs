@@ -99,6 +99,18 @@ public sealed class OpeningRangeBreakoutStrategy : IPriceStrategy
     ];
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The opening range is a band; the premarket levels are independent lines that can sit
+    /// anywhere relative to it, so they are not a pair and must not be shaded between.
+    /// </remarks>
+    public IReadOnlyList<Charting.LevelDisplay> LevelDisplays { get; } =
+    [
+        Charting.LevelDisplay.Band("ORB", "orb_high", "orb_low"),
+        Charting.LevelDisplay.Line("PM", "premarket_high", Charting.LevelTone.Positive),
+        Charting.LevelDisplay.Line("PM", "premarket_low", Charting.LevelTone.Negative)
+    ];
+
+    /// <inheritdoc />
     public void Configure(IReadOnlyDictionary<string, double> values)
     {
         ArgumentNullException.ThrowIfNull(values);

@@ -71,7 +71,14 @@ public static class LiveChartRender
         using var provider = new MoomooMarketDataProvider(
             connection, options, NullLogger<MoomooMarketDataProvider>.Instance);
 
-        var vm = new ChartViewModel(provider, NullLogger<ChartViewModel>.Instance)
+        // The same registry contents the running app has. The renderer resolves an alert's
+        // levels through the strategy that declared them, so a probe with an empty registry
+        // would draw no levels and look exactly like the bug this switch exists to catch.
+        var registry = new Core.Strategies.StrategyRegistry();
+        registry.Register(new Core.Strategies.OpeningRangeBreakoutStrategy());
+        registry.Register(new Core.Strategies.ZebraStrategy());
+
+        var vm = new ChartViewModel(provider, registry, NullLogger<ChartViewModel>.Instance)
         {
             TimeframeMinutes = options.TimeframeMinutes
         };
@@ -96,8 +103,27 @@ public static class LiveChartRender
         }
 
         Console.WriteLine($"  alerts      : {model.Alerts.Count}");
-        Console.WriteLine($"  ORB         : {model.OrbLow:N2} - {model.OrbHigh:N2}");
-        Console.WriteLine($"  premarket   : {model.PremarketLow:N2} - {model.PremarketHigh:N2}");
+        Console.WriteLine($"  strategy    : {focus.Strategy}");
+
+        // Printed because "the chart drew no levels" has two causes that look identical in a
+        // PNG: the alert carried none, or the strategy declared none. Naming the counts
+        // separates them without opening the image.
+        Console.WriteLine($"  bands       : {model.Bands.Count}");
+        foreach (var band in model.Bands)
+        {
+            Console.WriteLine($"      {band.Label,-6} {band.Lower:N2} - {band.Upper:N2}");
+        }
+
+        Console.WriteLine($"  lines       : {model.Lines.Count}");
+        foreach (var line in model.Lines)
+        {
+            Console.WriteLine($"      {line.Label,-6} {line.Value:N2}");
+        }
+
+        if (model.Bands.Count == 0 && model.Lines.Count == 0)
+        {
+            Console.WriteLine("  <-- NO LEVELS DRAWN. Check the alert's levels and the strategy's LevelDisplays.");
+        }
 
         if (vm.ErrorMessage is not null)
         {
